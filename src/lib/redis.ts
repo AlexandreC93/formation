@@ -100,8 +100,10 @@ export async function resetSession(code: string): Promise<void> {
 
 export async function deleteSession(code: string): Promise<void> {
   const upperCode = code.toUpperCase();
-  await redis.del(sessionKey(upperCode));
-  await redis.srem('active_sessions', upperCode);
+  await Promise.all([
+    redis.del(sessionKey(upperCode)),
+    redis.srem('active_sessions', upperCode)
+  ]);
 }
 
 export async function listSessions(): Promise<Array<{ code: string; data: SessionData }>> {
@@ -110,10 +112,24 @@ export async function listSessions(): Promise<Array<{ code: string; data: Sessio
   
   const pipeline = redis.pipeline();
   activeKeys.forEach((k) => pipeline.get(sessionKey(k as string)));
-  const results = await pipeline.exec<SessionData[]>();
+  const results = await pipeline.exec();
   
-  return activeKeys.map((key, i) => ({
-    code: key as string,
-    data: results[i],
-  }));
+  const sessions: Array<{ code: string; data: SessionData }> = [];
+  
+  for (let i = 0; i < activeKeys.length; i++) {
+    const code = activeKeys[i] as string;
+    const data = results[i];
+    
+    if (!data) {
+      // Nettoyage automatique : supprime le code orphelin du set
+      await redis.srem('active_sessions', code.toUpperCase());
+      continue;
+    }
+    
+    // Normalise la session
+    const parsedData = typeof data === 'string' ? JSON.parse(data) : data;
+    sessions.push({ code, data: parsedData as SessionData });
+  }
+  
+  return sessions;
 }

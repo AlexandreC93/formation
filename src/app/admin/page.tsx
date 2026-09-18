@@ -145,7 +145,32 @@ export default async function AdminPage() {
         {sessions.map(async ({ code, data }) => {
           const trainingId = data.training_id || 'administration-linux';
           const trainingConfig = await getTraining(trainingId);
-          if (!trainingConfig) return null; // Sécurité si formation supprimée
+          
+          if (!trainingConfig) {
+            return (
+              <div key={code} className="bg-red-500/10 border border-red-500/20 rounded-2xl p-6 flex flex-col gap-4">
+                <div className="flex items-center gap-3 text-red-400">
+                  <ShieldCheck className="w-6 h-6" />
+                  <h3 className="font-bold">Session Orpheline : {code}</h3>
+                </div>
+                <p className="text-slate-400 text-sm">
+                  La formation associée <code className="text-red-300">"{trainingId}"</code> est introuvable. 
+                  Le dossier <code>content/trainings/{trainingId}</code> a probablement été supprimé ou renommé.
+                </p>
+                <div className="flex gap-2">
+                  <form action={deleteSessionAction}>
+                    <input type="hidden" name="sessionCode" value={code} />
+                    <button
+                      type="submit"
+                      className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-sm font-semibold rounded-xl transition-all"
+                    >
+                      Supprimer cette session
+                    </button>
+                  </form>
+                </div>
+              </div>
+            );
+          }
 
           const allSegments = generateSegments(trainingConfig);
           const daysArray = Array.from({ length: trainingConfig.totalDays }, (_, i) => i + 1);
@@ -295,6 +320,22 @@ export default async function AdminPage() {
             </div>
           );
         })}
+
+        {/* Panneau de Debug Redis */}
+        <div className="mt-16 bg-slate-900 border border-white/10 rounded-2xl p-6">
+          <h3 className="text-white font-semibold mb-4 text-sm flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-slate-400" />
+            Debug / État Redis
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <p className="text-xs text-slate-500 mb-2 font-mono">Sessions retournées (listSessions)</p>
+              <pre className="bg-slate-950 p-4 rounded-xl text-xs text-slate-300 overflow-x-auto border border-white/5 font-mono">
+                {JSON.stringify(sessions, null, 2)}
+              </pre>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
