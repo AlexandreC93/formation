@@ -30,6 +30,8 @@ export async function getTrainings(): Promise<TrainingConfig[]> {
         try {
           const configContent = await readFile(configPath, 'utf-8');
           const config = JSON.parse(configContent) as TrainingConfig;
+          // Sécurité : forcer l'ID à correspondre strictement au nom du dossier
+          config.id = entry.name;
           configs.push(config);
         } catch {
           // Ignore if no config file or parsing error
@@ -46,7 +48,9 @@ export async function getTraining(id: string): Promise<TrainingConfig | null> {
   const configPath = join(process.cwd(), 'content', 'trainings', id, 'training.config.json');
   try {
     const configContent = await readFile(configPath, 'utf-8');
-    return JSON.parse(configContent) as TrainingConfig;
+    const config = JSON.parse(configContent) as TrainingConfig;
+    config.id = id;
+    return config;
   } catch {
     return null;
   }
