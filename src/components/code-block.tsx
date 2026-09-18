@@ -93,8 +93,11 @@ export function CodeBlockWrapper({
       {/* Code */}
       <pre
         {...props}
-        className="overflow-x-auto p-4 bg-slate-950 text-sm leading-relaxed whitespace-pre"
-        style={{ fontFamily: '"JetBrains Mono", "Fira Code", monospace' }}
+        className="overflow-x-auto p-4 bg-slate-950 text-xs sm:text-sm leading-relaxed whitespace-pre scroll-smooth"
+        style={{ 
+          fontFamily: '"JetBrains Mono", "Fira Code", monospace',
+          WebkitOverflowScrolling: 'touch' 
+        }}
       >
         {children}
       </pre>

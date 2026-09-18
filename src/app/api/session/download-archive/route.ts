@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { getSession } from '@/lib/redis';
-import { getTraining } from '@/lib/trainings';
+import { getTraining, generateSegments, checkPdfExists } from '@/lib/trainings';
 import JSZip from 'jszip';
-import { readdir, readFile } from 'fs/promises';
+import { readFile } from 'fs/promises';
 import { join } from 'path';
 
 export const dynamic = 'force-dynamic';
@@ -32,27 +32,49 @@ export async function GET() {
   }
 
   const zip = new JSZip();
+  const segments = generateSegments(config);
   const trainingDir = join(process.cwd(), 'content', 'trainings', trainingId);
 
-  try {
-    const segments = await readdir(trainingDir, { withFileTypes: true });
+  const rootFolder = zip.folder(`Formation-${config.title.replace(/[^a-zA-Z0-9-]/g, '_')}`);
+  if (!rootFolder) {
+    return new NextResponse('Erreur ZIP', { status: 500 });
+  }
 
+  try {
     for (const segment of segments) {
-      if (segment.isDirectory()) {
-        const segmentDir = join(trainingDir, segment.name);
-        const files = await readdir(segmentDir);
+      const jourFolderName = `Jour-${segment.day}`;
+      const segmentFolderName = `Segment-${String(segment.index).padStart(2, '0')}-${segment.title.replace(/[^a-zA-Z0-9-]/g, '_')}`;
+      const segmentFolder = rootFolder.folder(jourFolderName)?.folder(segmentFolderName);
+      
+      if (!segmentFolder) continue;
+
+      const segmentDir = join(trainingDir, segment.slug);
+
+      const addFile = async (type: 'cours' | 'tp' | 'corrige', niceName: string) => {
+        // Skip if corrigé is locked
+        if (type === 'corrige' && !session.unlocked_solutions.includes(segment.index)) {
+          return;
+        }
+
+        const hasPdf = await checkPdfExists(trainingId, segment.slug, type);
         
-        for (const file of files) {
-          if (file.endsWith('.mdx')) {
-            const filePath = join(segmentDir, file);
-            const content = await readFile(filePath, 'utf-8');
-            // Remove frontmatter for a cleaner raw markdown
-            const cleanContent = content.replace(/^---[\s\S]*?---\n*/, '');
-            const markdownFileName = file.replace('.mdx', '.md');
-            zip.file(`${segment.name}/${markdownFileName}`, cleanContent);
+        if (hasPdf) {
+          const pdfContent = await readFile(join(segmentDir, `${type}.pdf`));
+          segmentFolder.file(`${niceName}.pdf`, pdfContent);
+        } else {
+          try {
+            const mdxContent = await readFile(join(segmentDir, `${type}.mdx`), 'utf-8');
+            const cleanContent = mdxContent.replace(/^---[\s\S]*?---\n*/, '');
+            segmentFolder.file(`${niceName}.md`, cleanContent);
+          } catch {
+            // Fichier MDX manquant (ex: pas de corrigé)
           }
         }
-      }
+      };
+
+      await addFile('cours', 'Support-Cours');
+      await addFile('tp', 'Sujet-TP');
+      await addFile('corrige', 'Corrige-TP');
     }
 
     const zipContent = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });

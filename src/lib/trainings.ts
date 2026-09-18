@@ -78,3 +78,18 @@ export function getSegmentBySlug(config: TrainingConfig, dayStr: string, segStr:
   const slug = `j${dayStr}-s${segStr}`;
   return segments.find((s) => s.slug === slug);
 }
+
+export async function checkPdfExists(
+  trainingId: string,
+  segmentSlug: string,
+  type: 'cours' | 'tp' | 'corrige'
+): Promise<boolean> {
+  const filePath = join(process.cwd(), 'content', 'trainings', trainingId, segmentSlug, `${type}.pdf`);
+  try {
+    const { access } = await import('fs/promises');
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}

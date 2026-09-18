@@ -3,6 +3,7 @@ import { getSessionCode } from '@/lib/auth';
 import { getSession } from '@/lib/redis';
 import { getTraining, generateSegments } from '@/lib/trainings';
 import { Sidebar } from '@/components/sidebar';
+import { MobileNav } from '@/components/mobile-nav';
 
 export default async function DashboardLayout({
   children,
@@ -26,18 +27,28 @@ export default async function DashboardLayout({
 
   const segments = generateSegments(config);
 
+  const sidebarProps = {
+    initialStatus: {
+      active_segment: session.active_segment,
+      unlocked_solutions: session.unlocked_solutions,
+    },
+    sessionName: session.name,
+    trainingConfig: config,
+    segments,
+    allowArchiveDownload: session.allow_archive_download ?? false,
+  };
+
   return (
-    <div className="flex h-screen bg-slate-950 overflow-hidden">
-      <Sidebar
-        initialStatus={{
-          active_segment: session.active_segment,
-          unlocked_solutions: session.unlocked_solutions,
-        }}
-        sessionName={session.name}
-        trainingConfig={config}
-        segments={segments}
-        allowArchiveDownload={session.allow_archive_download ?? false}
-      />
+    <div className="flex flex-col md:flex-row h-screen bg-slate-950 overflow-hidden">
+      {/* Navigation Mobile (affichée uniquement < md) */}
+      <MobileNav {...sidebarProps} />
+
+      {/* Sidebar Desktop (masquée < md) */}
+      <div className="hidden md:flex flex-shrink-0 h-full">
+        <Sidebar {...sidebarProps} />
+      </div>
+
+      {/* Contenu Principal */}
       <main className="flex-1 overflow-y-auto">
         {children}
       </main>

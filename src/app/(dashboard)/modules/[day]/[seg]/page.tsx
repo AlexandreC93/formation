@@ -1,7 +1,7 @@
 import { notFound, redirect } from 'next/navigation';
 import { getSessionCode } from '@/lib/auth';
 import { getSession } from '@/lib/redis';
-import { getTraining, getSegmentBySlug } from '@/lib/trainings';
+import { getTraining, getSegmentBySlug, checkPdfExists } from '@/lib/trainings';
 import { loadMDX } from '@/lib/mdx';
 import { LockedScreen } from '@/components/locked-screen';
 import { SegmentTabs } from '@/components/segment-tabs';
@@ -38,19 +38,24 @@ export default async function ModulePage({ params }: PageProps) {
     );
   }
 
-  // 5. Chargement des contenus MDX
-  const [coursResult, tpResult] = await Promise.all([
+  // 5. Chargement des contenus MDX et détection PDF
+  const [coursResult, tpResult, hasCoursPdf, hasTpPdf] = await Promise.all([
     loadMDX(trainingId, segment.slug, 'cours'),
     loadMDX(trainingId, segment.slug, 'tp'),
+    checkPdfExists(trainingId, segment.slug, 'cours'),
+    checkPdfExists(trainingId, segment.slug, 'tp'),
   ]);
 
   if (!coursResult || !tpResult) notFound();
 
   // 6. Corrigé uniquement si explicitement libéré
   const solutionUnlocked = session.unlocked_solutions.includes(segment.index);
-  const corrigeResult = solutionUnlocked
-    ? await loadMDX(trainingId, segment.slug, 'corrige')
-    : null;
+  const [corrigeResult, hasCorrigePdf] = solutionUnlocked
+    ? await Promise.all([
+        loadMDX(trainingId, segment.slug, 'corrige'),
+        checkPdfExists(trainingId, segment.slug, 'corrige')
+      ])
+    : [null, false];
 
   // On peut récupérer le titre depuis le frontmatter du cours si présent
   const segmentTitle = (coursResult.frontmatter?.title as string) || segment.title;
@@ -62,6 +67,8 @@ export default async function ModulePage({ params }: PageProps) {
         tpContent={tpResult.content}
         corrigeContent={corrigeResult?.content ?? null}
         segmentTitle={`${segment.dayLabel} — S${segment.seg} : ${segmentTitle}`}
+        hasPdf={{ cours: hasCoursPdf, tp: hasTpPdf, corrige: hasCorrigePdf }}
+        pdfUrlBase={`/api/modules/${day}/${seg}/pdf`}
       />
     </div>
   );

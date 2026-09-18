@@ -29,14 +29,14 @@ export const mdxComponents = {
   ),
   // Paragraphes
   p: (props: React.HTMLAttributes<HTMLParagraphElement>) => (
-    <p className="text-slate-300 leading-relaxed mb-4" {...props} />
+    <p className="text-sm sm:text-base text-slate-300 leading-relaxed mb-4" {...props} />
   ),
   // Listes
   ul: (props: React.HTMLAttributes<HTMLUListElement>) => (
-    <ul className="list-disc list-inside space-y-1 mb-4 text-slate-300 pl-2" {...props} />
+    <ul className="list-disc list-inside space-y-1 mb-4 text-sm sm:text-base text-slate-300 pl-2" {...props} />
   ),
   ol: (props: React.HTMLAttributes<HTMLOListElement>) => (
-    <ol className="list-decimal list-inside space-y-1 mb-4 text-slate-300 pl-2" {...props} />
+    <ol className="list-decimal list-inside space-y-1 mb-4 text-sm sm:text-base text-slate-300 pl-2" {...props} />
   ),
   li: (props: React.HTMLAttributes<HTMLLIElement>) => (
     <li className="text-slate-300 leading-relaxed" {...props} />
