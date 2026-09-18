@@ -1,0 +1,73 @@
+---
+title: Scan de Vulnérabilités
+---
+
+# Scan de Vulnérabilités (Trivy / OpenVAS)
+
+## Trivy — Scan de conteneurs et systèmes de fichiers
+
+```bash
+# Installation
+curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+# Scanner une image Docker
+trivy image nginx:latest
+trivy image nginx:latest --severity HIGH,CRITICAL
+
+# Scanner un système de fichiers
+trivy fs / --severity CRITICAL
+
+# Scanner les fichiers de configuration
+trivy config /etc/
+
+# Export JSON
+trivy image nginx:latest -f json -o /tmp/report.json
+
+# Ignorer des CVE spécifiques
+cat > .trivyignore << 'EOF'
+# CVE justifiée
+CVE-2024-1234
+EOF
+trivy image nginx:latest --ignorefile .trivyignore
+```
+
+## Analyse des paquets vulnérables
+
+```bash
+# Paquets obsolètes
+apt list --upgradable 2>/dev/null | grep -v 'Listing'
+dnf check-update
+
+# Paquets avec CVE connues (Debian/Ubuntu)
+apt install debsecan -y
+debsecan --suite $(lsb_release -cs) --format report 2>/dev/null | head -30
+
+# Mettre à jour les paquets de sécurité uniquement
+apt install unattended-upgrades -y
+unattended-upgrades -v
+```
+
+## Automatisation des scans
+
+```bash
+# Script de scan quotidien
+cat > /opt/daily-scan.sh << 'SCRIPT'
+#!/bin/bash
+DATE=$(date +%Y%m%d)
+REPORT_DIR="/var/reports/security"
+mkdir -p $REPORT_DIR
+
+# Scan paquets obsolètes
+apt list --upgradable 2>/dev/null > $REPORT_DIR/upgradable-$DATE.txt
+
+# debsecan
+debsecan --suite bookworm --format report > $REPORT_DIR/cve-$DATE.txt 2>/dev/null || true
+
+# Compter les critiques
+CRITICAL=$(grep -c 'high\|critical' $REPORT_DIR/cve-$DATE.txt 2>/dev/null || echo 0)
+if [ "$CRITICAL" -gt 0 ]; then
+    echo "ALERTE : $CRITICAL vulnérabilités critiques détectées" >&2
+fi
+SCRIPT
+chmod +x /opt/daily-scan.sh
+```

@@ -1,0 +1,42 @@
+---
+title: TP — Réponse à incident
+---
+
+# TP — Réponse à incident & Forensique Linux
+
+## Objectifs
+- Appliquer la méthodologie PICERL
+- Collecter des artefacts forensiques
+- Analyser un système potentiellement compromis
+
+## Durée estimée : 45 minutes
+
+## Exercice 1 — Triage initial
+
+Simulez un incident :
+1. Téléchargez un fichier dans `/tmp`
+2. Créez une tâche cron suspecte
+3. Ouvrez une connexion réseau persistante
+
+Effectuez le triage :
+1. Collectez processus, connexions réseau, utilisateurs connectés
+2. Identifiez les fichiers créés récemment
+3. Exportez un bundle d'artefacts avec hash SHA-256
+
+## Exercice 2 — Analyse des logs
+
+1. Identifiez l'heure exacte de la première connexion suspecte
+2. Retracez le chemin d'attaque depuis les logs (auth.log + audit.log)
+3. Listez tous les fichiers accédés par l'attaquant
+
+## Exercice 3 — Confinement
+
+1. Isolez la machine du réseau sans la redémarrer (iptables)
+2. Prenez un snapshot du disque avec `dd`
+3. Vérifiez l'intégrité du snapshot avec SHA-256
+
+## Exercice 4 — Post-mortem
+
+1. Rédigez un rapport d'incident avec : timeline, vecteur d'attaque, IoC, impact
+2. Proposez 3 mesures de remédiation
+3. Listez les améliorations de surveillance à mettre en place

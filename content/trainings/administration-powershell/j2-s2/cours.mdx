@@ -1,0 +1,147 @@
+---
+title: Firewall iptables & nftables
+---
+
+# Firewall iptables & nftables
+
+## Architecture iptables
+
+iptables utilise des **tables** contenant des **chaînes** de règles :
+
+| Table | Chaînes | Usage |
+|---|---|---|
+| `filter` | INPUT, FORWARD, OUTPUT | Filtrage du trafic |
+| `nat` | PREROUTING, POSTROUTING, OUTPUT | Translation d'adresses |
+| `mangle` | Toutes | Modification des paquets |
+| `raw` | PREROUTING, OUTPUT | Bypass du suivi de connexion |
+
+```bash
+# Lister les règles
+iptables -L -n -v --line-numbers
+iptables -L INPUT -n -v
+iptables -t nat -L -n
+
+# Politique par défaut (DROP = tout bloquer sauf autorisé)
+iptables -P INPUT DROP
+iptables -P FORWARD DROP
+iptables -P OUTPUT ACCEPT
+
+# Autoriser le trafic établi (STATEFUL)
+iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A INPUT -i lo -j ACCEPT
+
+# Autoriser SSH (depuis un réseau spécifique)
+iptables -A INPUT -p tcp --dport 22 -s 10.0.0.0/8 -j ACCEPT
+
+# Autoriser HTTP/HTTPS
+iptables -A INPUT -p tcp -m multiport --dports 80,443 -j ACCEPT
+
+# Bloquer une IP spécifique
+iptables -I INPUT -s 203.0.113.1 -j DROP
+
+# Limitation de débit (anti-brute-force SSH)
+iptables -A INPUT -p tcp --dport 22 -m state --state NEW \
+  -m limit --limit 3/min --limit-burst 5 -j ACCEPT
+iptables -A INPUT -p tcp --dport 22 -j DROP
+
+# Sauvegarder et restaurer
+iptables-save > /etc/iptables/rules.v4
+iptables-restore < /etc/iptables/rules.v4
+```
+
+## nftables — Le successeur moderne
+
+```bash
+# Structure : tables > chaînes > règles
+# Lister la configuration
+nft list ruleset
+
+# Configuration complète d'un pare-feu de base
+cat > /etc/nftables.conf << 'EOF'
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+        
+        # Loopback
+        iifname lo accept
+        
+        # Connexions établies
+        ct state established,related accept
+        
+        # SSH (réseau de gestion uniquement)
+        ip saddr 10.0.0.0/8 tcp dport 22 ct state new accept
+        
+        # HTTP/HTTPS
+        tcp dport { 80, 443 } accept
+        
+        # ICMP ping
+        icmp type echo-request limit rate 5/second accept
+        
+        # Log les refus
+        log prefix "[NFT-DROP] " flags all
+    }
+    
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+    }
+    
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}
+
+table ip nat {
+    chain postrouting {
+        type nat hook postrouting priority 100;
+        oifname "eth0" masquerade
+    }
+}
+EOF
+
+systemctl enable nftables
+systemctl start nftables
+nft list ruleset
+```
+
+## fail2ban — Blocage automatique
+
+```bash
+# Installation
+apt install fail2ban -y
+
+# Configuration locale
+cat > /etc/fail2ban/jail.local << 'EOF'
+[DEFAULT]
+bantime  = 3600
+findtime = 600
+maxretry = 5
+backend = systemd
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = %(sshd_log)s
+maxretry = 3
+bantime = 86400
+
+[nginx-http-auth]
+enabled = true
+filter = nginx-http-auth
+port = http,https
+logpath = /var/log/nginx/error.log
+EOF
+
+systemctl restart fail2ban
+fail2ban-client status
+fail2ban-client status sshd
+
+# Voir les IPs bannies
+fail2ban-client get sshd banip
+# Débannir une IP
+fail2ban-client set sshd unbanip 1.2.3.4
+```

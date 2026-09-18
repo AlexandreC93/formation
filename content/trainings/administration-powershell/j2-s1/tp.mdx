@@ -1,0 +1,38 @@
+---
+title: TP — Diagnostic et analyse réseau
+---
+
+# TP — Diagnostic et analyse réseau
+
+## Objectifs
+- Analyser la configuration réseau d'un système
+- Utiliser les outils de diagnostic réseau
+- Capturer et analyser du trafic
+
+## Durée estimée : 45 minutes
+
+## Exercice 1 — Inventaire réseau
+
+1. Cartographiez la configuration réseau complète : interfaces, IPs, routes, DNS
+2. Identifiez tous les ports en écoute avec le processus associé
+3. Listez toutes les connexions TCP établies, groupées par application
+
+## Exercice 2 — Analyse DNS
+
+1. Résolvez `mail.example.com` en cherchant successivement les enregistrements A, MX, TXT, SPF
+2. Effectuez une résolution inverse (PTR) sur votre IP publique
+3. Déterminez le serveur DNS autoritaire du domaine `example.com`
+
+## Exercice 3 — Capture de trafic
+
+1. Capturez 60 secondes de trafic sur votre interface principale, filtrez uniquement TCP port 443
+2. Identifiez les 5 IP distantes les plus actives dans la capture
+3. Détectez les tentatives de connexion refusées (RST) dans la capture
+
+## Exercice 4 — Scan réseau
+
+1. Effectuez un ping sweep sur votre sous-réseau local
+2. Pour chaque hôte découvert, listez les 20 premiers ports ouverts
+3. Détectez la version du service sur le port SSH de votre machine
+
+> **IMPORTANT** : Ne scannez que votre propre réseau de formation ou les IP autorisées par le formateur.

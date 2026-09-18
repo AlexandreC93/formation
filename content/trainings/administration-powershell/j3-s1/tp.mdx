@@ -1,0 +1,39 @@
+---
+title: TP — Cryptographie appliquée
+---
+
+# TP — Cryptographie appliquée avec OpenSSL
+
+## Objectifs
+- Manipuler les primitives cryptographiques avec openssl
+- Comprendre la différence chiffrement symétrique / asymétrique
+- Vérifier l'intégrité de fichiers
+
+## Durée estimée : 45 minutes
+
+## Exercice 1 — Chiffrement symétrique
+
+1. Chiffrez le fichier `/etc/passwd` avec AES-256-GCM et un mot de passe fort
+2. Vérifiez que le fichier chiffré est bien illisible
+3. Déchiffrez et vérifiez l'intégrité avec un hash SHA-256
+4. Mesurez la différence de performance entre AES-128-CBC et AES-256-GCM sur 1 Go de données
+
+## Exercice 2 — PKI minimale
+
+1. Générez une paire de clés RSA-4096
+2. Signez un document PDF (ou fichier texte) avec votre clé privée
+3. Vérifiez la signature avec la clé publique
+4. Montrez ce qui se passe si le document est modifié après signature
+
+## Exercice 3 — Analyse TLS
+
+1. Inspectez le certificat de `mail.google.com:443` : émetteur, validité, algorithme
+2. Listez les suites cryptographiques supportées par le serveur
+3. Vérifiez si le serveur supporte des suites obsolètes (RC4, DES, 3DES)
+4. Comparez les certificats de 3 sites gouvernementaux et documentez les différences
+
+## Exercice 4 — Intégrité système
+
+1. Générez un manifest SHA-256 de tous les binaires dans `/usr/bin`
+2. Modifiez artificiellement un fichier et détectez la modification avec le manifest
+3. Expliquez pourquoi MD5 ne doit plus être utilisé pour vérifier l'intégrité

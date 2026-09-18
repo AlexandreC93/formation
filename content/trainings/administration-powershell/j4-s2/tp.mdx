@@ -1,0 +1,39 @@
+---
+title: TP — Audit et journalisation
+---
+
+# TP — Audit système et journalisation
+
+## Objectifs
+- Configurer auditd pour surveiller les actions critiques
+- Analyser les événements d'audit
+- Mettre en place une politique de journalisation
+
+## Durée estimée : 45 minutes
+
+## Exercice 1 — Règles d'audit
+
+1. Configurez auditd pour surveiller :
+   - Toute modification de `/etc/passwd`, `/etc/shadow`, `/etc/group`
+   - Toute utilisation de `sudo`
+   - Toute connexion SSH réussie ou échouée
+   - Les exécutions de commandes par root
+2. Rechargez les règles et vérifiez qu'elles sont actives
+
+## Exercice 2 — Génération d'événements
+
+1. Effectuez plusieurs opérations (ajouter un utilisateur, utiliser sudo, modifier un fichier surveillé)
+2. Retrouvez ces événements dans les logs avec `ausearch`
+3. Générez un rapport HTML des authentifications du jour
+
+## Exercice 3 — Détection d'intrusion
+
+1. Tentez de modifier `/etc/shadow` directement
+2. Identifiez dans les logs la tentative avec les détails complets (PID, UID, commande)
+3. Écrivez un script qui parse les logs d'audit et alerte sur les activités suspectes
+
+## Exercice 4 — Rétention des logs
+
+1. Configurez `logrotate` pour les logs d'audit : rotation hebdomadaire, 52 semaines
+2. Calculez l'espace disque nécessaire pour 1 an de logs
+3. Configurez une alerte si l'espace des logs dépasse 80% de la partition

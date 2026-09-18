@@ -1,0 +1,39 @@
+---
+title: TP — Implémentation SELinux/AppArmor
+---
+
+# TP — Implémentation SELinux/AppArmor
+
+## Objectifs
+- Configurer SELinux ou AppArmor selon la distribution
+- Écrire et appliquer des politiques de confinement
+- Analyser et corriger les refus de politique
+
+## Durée estimée : 45 minutes
+
+## Exercice 1 — Audit des politiques actives
+
+1. Listez tous les processus confinés par SELinux/AppArmor
+2. Identifiez les services avec des profils en mode "complain" (permissif)
+3. Listez les refus des dernières 24h et expliquez-les
+
+## Exercice 2 — Confinement d'une application
+
+1. Installez nginx
+2. Créez une page HTML dans `/opt/webapp/` (hors du répertoire habituel)
+3. Configurez nginx pour servir depuis `/opt/webapp/`
+4. Ajustez la politique pour autoriser l'accès (sans désactiver SELinux/AppArmor)
+
+## Exercice 3 — Création d'un profil AppArmor
+
+Créez un profil AppArmor pour un script Python `/opt/monitor.py` qui :
+- Peut lire `/proc/meminfo` et `/proc/cpuinfo`
+- Peut écrire dans `/var/log/monitor.log`
+- Ne peut accéder à rien d'autre
+
+## Exercice 4 — Réponse à un refus
+
+1. Simulez un refus en déplaçant les fichiers de configuration de nginx
+2. Analysez le refus avec `audit2why` ou `aa-why`
+3. Corrigez sans désactiver la politique (contexte ou booléen)
+4. Documentez la procédure de résolution

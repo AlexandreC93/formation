@@ -1,0 +1,130 @@
+---
+title: Orchestration Kubernetes
+---
+
+# Orchestration Kubernetes (k8s Basics)
+
+## Concepts Kubernetes
+
+| Objet | Rôle |
+|---|---|
+| Pod | Unité de base (1+ conteneurs) |
+| Deployment | Gestion du cycle de vie des pods |
+| Service | Exposition réseau interne/externe |
+| Namespace | Isolation logique des ressources |
+| ConfigMap | Configuration non sensible |
+| Secret | Données sensibles chiffrées |
+| NetworkPolicy | Règles de trafic réseau |
+| RBAC | Contrôle d'accès basé sur les rôles |
+
+```bash
+# Contexte et cluster
+kubectl cluster-info
+kubectl get nodes -o wide
+kubectl get pods --all-namespaces
+
+# Namespace
+kubectl create namespace formation
+
+# Déployer une application
+kubectl create deployment webapp \
+  --image=nginx:alpine \
+  --replicas=3 \
+  --namespace formation
+
+# Exposer le déploiement
+kubectl expose deployment webapp \
+  --type=ClusterIP \
+  --port=80 \
+  --namespace formation
+
+# Inspecter
+kubectl describe pod -l app=webapp -n formation
+kubectl logs -l app=webapp -n formation --tail=50
+kubectl exec -it <pod-name> -n formation -- /bin/sh
+```
+
+## Sécurité Kubernetes — RBAC
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: webapp-sa
+  namespace: formation
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: webapp-role
+  namespace: formation
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: webapp-rolebinding
+  namespace: formation
+subjects:
+- kind: ServiceAccount
+  name: webapp-sa
+  namespace: formation
+roleRef:
+  kind: Role
+  name: webapp-role
+  apiGroup: rbac.authorization.k8s.io
+```
+
+## NetworkPolicy
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: webapp-netpol
+  namespace: formation
+spec:
+  podSelector:
+    matchLabels:
+      app: webapp
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: nginx
+    ports:
+    - protocol: TCP
+      port: 8080
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+```
+
+## Secrets Kubernetes
+
+```bash
+# Créer un secret
+kubectl create secret generic db-creds \
+  --from-literal=username=admin \
+  --from-literal=password='S3cr3t!' \
+  --namespace formation
+
+# Créer un secret TLS
+kubectl create secret tls webapp-tls \
+  --cert=cert.pem --key=key.pem \
+  --namespace formation
+
+# Lire un secret
+kubectl get secret db-creds -o jsonpath='{.data.password}' | base64 -d
+```

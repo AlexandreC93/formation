@@ -1,0 +1,49 @@
+---
+title: TP — Supervision et gestion des services
+---
+
+# TP — Supervision et gestion des services
+
+## Objectifs
+
+- Analyser l'état des processus et services du système
+- Écrire un service systemd personnalisé
+- Mettre en place une supervision basique
+
+## Durée estimée : 45 minutes
+
+---
+
+## Exercice 1 — Analyse des processus
+
+1. Listez les 5 processus consommant le plus de mémoire RSS. Affichez : PID, utilisateur, RSS (en Mo), commande.
+2. Identifiez tous les processus zombies sur le système.
+3. Trouvez tous les processus écoutant sur le réseau (TCP uniquement, état LISTEN).
+
+## Exercice 2 — Service systemd personnalisé
+
+Créez un service systemd `/etc/systemd/system/healthcheck.service` qui :
+1. Exécute un script `/opt/healthcheck.sh` au démarrage
+2. Se relance automatiquement en cas d'erreur (après 10 secondes)
+3. Écrit ses logs dans journald avec le tag `HEALTHCHECK`
+4. Démarre après le réseau (`network.target`)
+
+Le script `healthcheck.sh` doit :
+- Vérifier que le port 80 est accessible en local
+- Écrire `OK` ou `FAIL` dans `/var/log/healthcheck.log` avec un timestamp
+
+## Exercice 3 — Supervision mémoire
+
+1. Écrivez un script qui alerte (echo dans stderr) si la mémoire disponible passe sous 10%.
+2. Ajoutez ce script comme timer systemd s'exécutant toutes les 5 minutes.
+3. Testez en simulant une charge mémoire avec `stress-ng` si disponible.
+
+## Exercice 4 — Analyse des logs système
+
+1. Combien d'erreurs systemd ont eu lieu dans les dernières 24h ?
+2. Quel service a le plus de logs d'erreur ?
+3. Exportez les logs du boot actuel au format JSON dans `/tmp/boot-logs.json`.
+
+---
+
+> **Livrable** : Les fichiers `healthcheck.service`, `healthcheck.sh`, et votre script de supervision mémoire.

@@ -1,0 +1,40 @@
+---
+title: TP — Pipeline CI/CD sécurisé
+---
+
+# TP — Pipeline CI/CD sécurisé
+
+## Objectifs
+- Mettre en place un pipeline avec contrôles de sécurité
+- Détecter les vulnérabilités avant le déploiement
+- Gérer les secrets de façon sécurisée
+
+## Durée estimée : 45 minutes
+
+## Exercice 1 — SAST
+
+1. Installez Bandit et scannez un projet Python
+2. Identifiez les 3 vulnérabilités les plus critiques
+3. Corrigez-les et relancez le scan
+
+## Exercice 2 — Pipeline de build sécurisé
+
+Écrivez un `Makefile` qui enchaîne :
+1. Lint du code
+2. Tests unitaires
+3. Build de l'image Docker
+4. Scan Trivy avec sortie d'erreur si CRITICAL
+5. Push uniquement si le scan passe
+
+## Exercice 3 — Secrets management
+
+1. Détectez les secrets hardcodés avec `gitleaks`
+2. Mettez en place un pre-commit hook qui refuse les commits contenant des secrets
+3. Remplacez les secrets hardcodés par des variables d'environnement
+
+## Exercice 4 — Signature d'images
+
+1. Installez Cosign
+2. Générez une paire de clés de signature
+3. Buildez une image, signez-la, vérifiez la signature
+4. Montrez ce qui se passe avec une image non signée

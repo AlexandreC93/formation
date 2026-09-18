@@ -1,0 +1,97 @@
+---
+title: CI/CD Sécurisé & DevSecOps
+---
+
+# CI/CD Sécurisé & DevSecOps
+
+## Le modèle DevSecOps
+
+DevSecOps intègre la sécurité à chaque étape du pipeline CI/CD :
+
+```
+Code → Build → Test → Scan → Deploy → Monitor
+  ↑       ↑      ↑      ↑       ↑        ↑
+SAST   DAST  Tests  Trivy  Policies  Alerting
+```
+
+## Pipeline GitLab CI sécurisé
+
+```yaml
+# .gitlab-ci.yml
+stages:
+  - lint
+  - build
+  - security
+  - deploy
+
+variables:
+  IMAGE: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+
+sast:
+  stage: lint
+  image: python:3.12-slim
+  script:
+    - pip install bandit semgrep
+    - bandit -r ./src -f json -o sast-report.json
+  artifacts:
+    reports:
+      sast: sast-report.json
+
+build:
+  stage: build
+  image: docker:24
+  services: [docker:24-dind]
+  script:
+    - docker build -t $IMAGE .
+    - docker push $IMAGE
+
+trivy-scan:
+  stage: security
+  image: aquasec/trivy:latest
+  script:
+    - trivy image --exit-code 1 --severity CRITICAL $IMAGE
+  allow_failure: false
+
+deploy-prod:
+  stage: deploy
+  script:
+    - kubectl set image deployment/webapp app=$IMAGE
+  environment: production
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual
+```
+
+## Gestion des secrets en CI/CD
+
+```bash
+# NE JAMAIS mettre les secrets dans le code
+# Utiliser :
+
+# 1. Variables CI/CD chiffrées (GitLab)
+# Settings > CI/CD > Variables > Protected + Masked
+
+# 2. HashiCorp Vault
+vault kv get -field=password secret/prod/database
+
+# 3. Sops (chiffrement des fichiers de config)
+sops --encrypt --pgp $GPG_KEY secrets.yaml > secrets.enc.yaml
+sops --decrypt secrets.enc.yaml | kubectl apply -f -
+```
+
+## Signing des images Docker (Cosign)
+
+```bash
+# Installation
+curl -sL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
+  -o /usr/local/bin/cosign && chmod +x /usr/local/bin/cosign
+
+# Générer une paire de clés
+cosign generate-key-pair
+
+# Signer une image
+cosign sign --key cosign.key $REGISTRY/app:v1.0
+
+# Vérifier la signature
+cosign verify --key cosign.pub $REGISTRY/app:v1.0
+```

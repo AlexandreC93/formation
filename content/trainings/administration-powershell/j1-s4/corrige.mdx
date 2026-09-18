@@ -1,0 +1,108 @@
+---
+title: Corrigé — Gestion des paquets et compilation
+---
+
+# Corrigé — Gestion des paquets et compilation
+
+## Exercice 1 — Audit
+
+```bash
+# 1. Paquets installés manuellement
+apt-mark showmanual | sort
+
+# 2. Fichiers modifiés post-installation
+dpkg --verify 2>&1 | grep -v '^$'
+# Ou plus détaillé :
+dpkg -l | awk 'NR>5 {print $2}' | while read pkg; do
+  dpkg --verify "$pkg" 2>/dev/null && echo "$pkg: OK" || echo "$pkg: MODIFIÉ"
+done
+
+# 3. Paquets depuis dépôts tiers
+apt-cache policy | grep -A1 'packages:' | grep -v 'packages:' | \
+  grep -v 'http://deb.debian.org\|http://security.debian.org\|http://archive.ubuntu.com' | \
+  head -20
+# Plus précis :
+grep -r 'Package-Type' /var/lib/apt/lists/ 2>/dev/null
+```
+
+## Exercice 2 — Compilation htop
+
+```bash
+# Dépendances
+apt install git autoconf automake libncurses-dev -y
+
+# Sources
+git clone https://github.com/htop-dev/htop.git /tmp/htop-build
+cd /tmp/htop-build
+
+# Configuration
+./autogen.sh
+./configure --prefix=/usr/local \
+            --disable-sensors \
+            --disable-openvz
+
+# Compilation et installation
+make -j$(nproc)
+sudo make install
+
+# Vérification
+/usr/local/bin/htop --version
+ldd /usr/local/bin/htop
+
+# Paquet .deb avec checkinstall
+apt install checkinstall -y
+sudo checkinstall --install=no --pkgname=htop-custom --pkgversion=3.3.0 make install
+ls -lh *.deb
+```
+
+## Exercice 3 — Dépôt Nginx
+
+```bash
+# Clé GPG
+curl -fsSL https://nginx.org/keys/nginx_signing.key | \
+  gpg --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg
+
+# Vérifier l'empreinte (doit être : 573B FD6B 3D8F BC64 1079 A6AB ABF5 BD82 7BD9 BF62)
+gpg --dry-run --quiet --import --import-options import-show \
+  /usr/share/keyrings/nginx-archive-keyring.gpg
+
+# Ajouter le dépôt mainline
+echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] \
+https://nginx.org/packages/mainline/ubuntu $(lsb_release -cs) nginx" \
+> /etc/apt/sources.list.d/nginx.list
+
+apt update
+apt install nginx -y
+nginx -v
+
+# Vérification intégrité
+dpkg --verify nginx
+
+# Épinglage (pin)
+cat > /etc/apt/preferences.d/nginx << 'EOF'
+Package: nginx
+Pin: version 1.25.*
+Pin-Priority: 1001
+EOF
+```
+
+## Exercice 4 — Bibliothèques
+
+```bash
+# 1. Binaire avec le plus de bibliothèques
+for bin in /usr/bin/* /usr/sbin/*; do
+  count=$(ldd "$bin" 2>/dev/null | wc -l)
+  echo "$count $bin"
+done | sort -rn | head -10
+
+# 2. Liens cassés dans /usr/lib
+find /usr/lib -type l ! -exec test -e {} \; -print 2>/dev/null
+
+# 3. Comparaison statique vs dynamique
+file /bin/bash
+ldd /bin/bash
+# bash est dynamique : on comparerait avec busybox static:
+file /bin/busybox 2>/dev/null || echo "busybox non installé"
+apt install busybox-static -y
+ldd /bin/busybox  # "not a dynamic executable"
+```

