@@ -1,0 +1,138 @@
+---
+title: Corrigé — Configuration firewall
+---
+
+# Corrigé — Configuration firewall
+
+## Exercice 1 — Ruleset nftables
+
+```bash
+cat > /etc/nftables-prod.conf << 'NFTEOF'
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+        
+        # Loopback
+        iifname "lo" accept comment "loopback"
+        
+        # Connexions établies et liées
+        ct state { established, related } accept
+        ct state invalid drop
+        
+        # SSH : réseau de gestion seulement
+        ip saddr 10.10.0.0/16 tcp dport 22 ct state new \
+          limit rate 5/minute accept comment "SSH management"
+        
+        # Web
+        tcp dport { 80, 443 } ct state new accept comment "HTTP/HTTPS"
+        
+        # ICMP ping limité
+        ip protocol icmp icmp type echo-request \
+          limit rate 5/second burst 10 packets accept
+        ip6 nexthdr icmpv6 icmpv6 type echo-request \
+          limit rate 5/second burst 10 packets accept
+        
+        # Log tous les refus
+        log prefix "[FIREWALL-DROP] " flags all counter drop
+    }
+    
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+        log prefix "[FWD-DROP] " flags all counter drop
+    }
+    
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}
+NFTEOF
+
+nft -f /etc/nftables-prod.conf
+nft list ruleset
+```
+
+## Exercice 2 — NAT
+
+```bash
+# Activer le forwarding IP
+echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+sysctl -p
+
+# NAT masquerade pour 192.168.100.0/24
+nft add table ip nat
+nft add chain ip nat postrouting '{ type nat hook postrouting priority 100; }'
+nft add rule ip nat postrouting ip saddr 192.168.100.0/24 oifname "eth0" masquerade
+
+# Redirection port 8080 -> 192.168.100.10:80
+nft add chain ip nat prerouting '{ type nat hook prerouting priority -100; }'
+nft add rule ip nat prerouting tcp dport 8080 dnat to 192.168.100.10:80
+
+# Autoriser le forwarding pour ce flux
+nft add rule inet filter forward ip daddr 192.168.100.10 tcp dport 80 ct state new accept
+nft add rule inet filter forward ct state established,related accept
+
+nft list ruleset | grep -A5 nat
+```
+
+## Exercice 3 — fail2ban
+
+```bash
+# /etc/fail2ban/jail.local
+cat > /etc/fail2ban/jail.local << 'EOF'
+[DEFAULT]
+ignoreip = 127.0.0.1/8 10.10.0.0/16
+bantime  = 86400
+findtime = 600
+maxretry = 5
+backend = systemd
+action = %(action_mwl)s
+
+[sshd]
+enabled = true
+maxretry = 3
+bantime = 86400
+
+[nginx-admin]
+enabled = true
+filter = nginx-admin
+port = http,https
+logpath = /var/log/nginx/access.log
+maxretry = 5
+bantime = 3600
+EOF
+
+# Filtre nginx admin
+cat > /etc/fail2ban/filter.d/nginx-admin.conf << 'EOF'
+[Definition]
+failregex = ^<HOST>.*"(GET|POST) /admin
+ignoreregex =
+EOF
+
+systemctl restart fail2ban
+fail2ban-client status
+
+# Simulation de brute-force (5 tentatives)
+for i in {1..5}; do
+  ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 fakeuser@127.0.0.1 2>/dev/null || true
+done
+fail2ban-client status sshd
+```
+
+## Exercice 4 — Audit
+
+```bash
+# Règles avec compteurs
+nft list ruleset -a | grep counter
+
+# Test depuis localhost
+curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:80
+nc -zv 127.0.0.1 22 2>&1
+
+# Export reproductible
+nft list ruleset > /etc/nftables-export-$(date +%Y%m%d).conf
+echo "Configuration exportée dans /etc/nftables-export-$(date +%Y%m%d).conf"
+```

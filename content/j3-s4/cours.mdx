@@ -1,0 +1,96 @@
+---
+title: Chiffrement de Partitions & Données au Repos
+---
+
+# Chiffrement de Partitions & Données au Repos
+
+## LUKS (Linux Unified Key Setup)
+
+```bash
+# Initialiser une partition chiffrée LUKS2
+cryptsetup luksFormat --type luks2 \
+  --cipher aes-xts-plain64 \
+  --key-size 512 \
+  --hash sha256 \
+  --iter-time 5000 \
+  /dev/sdb1
+
+# Ouvrir le conteneur
+cryptsetup luksOpen /dev/sdb1 donnees-chiffrees
+
+# Créer le système de fichiers
+mkfs.ext4 /dev/mapper/donnees-chiffrees
+
+# Monter
+mount /dev/mapper/donnees-chiffrees /mnt/secure
+
+# Fermer (démonter + verrouiller)
+umount /mnt/secure
+cryptsetup luksClose donnees-chiffrees
+
+# Inspecter
+cryptsetup luksDump /dev/sdb1
+```
+
+## Gestion des slots de clés LUKS
+
+```bash
+# Ajouter une clé supplémentaire (ex: clé de secours)
+cryptsetup luksAddKey /dev/sdb1  # Demande l'ancienne clé puis la nouvelle
+
+# Ajouter un fichier de clé (keyfile)
+dd if=/dev/urandom of=/root/keyfile.bin bs=4096 count=1
+chmod 400 /root/keyfile.bin
+cryptsetup luksAddKey /dev/sdb1 /root/keyfile.bin
+
+# Lister les slots actifs
+cryptsetup luksDump /dev/sdb1 | grep 'Key Slot'
+
+# Révoquer un slot
+cryptsetup luksKillSlot /dev/sdb1 1  # Révoque le slot 1
+
+# /etc/crypttab pour le montage automatique
+echo "donnees-chiffrees /dev/sdb1 /root/keyfile.bin luks" >> /etc/crypttab
+```
+
+## VeraCrypt (conteneurs chiffrés)
+
+```bash
+# Créer un conteneur chiffré de 2 Go
+veracrypt --text --create /opt/conteneur.vc \
+  --size 2G \
+  --encryption AES \
+  --hash SHA-512 \
+  --filesystem ext4 \
+  --password "motdepassefort" \
+  --pim 0 \
+  --keyfiles ""
+
+# Monter
+veracrypt --text --mount /opt/conteneur.vc /mnt/secure \
+  --password "motdepassefort" --pim 0
+
+# Démonter
+veracrypt --text --dismount /mnt/secure
+```
+
+## Chiffrement de volumes systemd-homed
+
+```bash
+# Créer un utilisateur avec home chiffré
+homectl create utilisateur-secure \
+  --real-name="Utilisateur Sécurisé" \
+  --storage=luks \
+  --disk-size=5G \
+  --password="motdepassefort"
+
+# Activer
+homectl activate utilisateur-secure
+
+# Désactiver (verrouille le home chiffré)
+homectl deactivate utilisateur-secure
+
+# Lister
+homectl list
+homectl inspect utilisateur-secure
+```

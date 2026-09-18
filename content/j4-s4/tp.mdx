@@ -1,0 +1,36 @@
+---
+title: TP — Scan de vulnérabilités
+---
+
+# TP — Scan de vulnérabilités
+
+## Objectifs
+- Utiliser des outils de scan open source
+- Analyser et prioriser les vulnérabilités
+- Mettre en place un processus de gestion des vulnérabilités
+
+## Durée estimée : 45 minutes
+
+## Exercice 1 — Scan du système
+
+1. Installez Trivy et scannez le système de fichiers local
+2. Listez les vulnérabilités CRITICAL uniquement
+3. Pour les 3 premières CRITICAL, recherchez le CVE officiel et la version corrigée
+
+## Exercice 2 — Scan de conteneur
+
+1. Scannez les images `nginx:latest`, `python:3.9`, et `alpine:latest`
+2. Classez les images par nombre de vulnérabilités CRITICAL
+3. Proposez des images alternatives plus sécurisées (distroless ou slim)
+
+## Exercice 3 — Patch management
+
+1. Listez tous les paquets avec mises à jour de sécurité disponibles
+2. Appliquez les mises à jour de sécurité uniquement
+3. Vérifiez qu'aucun service critique n'est cassé après la mise à jour
+
+## Exercice 4 — Rapport de vulnérabilités
+
+1. Générez un rapport JSON complet avec Trivy
+2. Parsez-le pour extraire : CVE ID, package, version affectée, score CVSS
+3. Produisez un rapport HTML trié par score CVSS décroissant

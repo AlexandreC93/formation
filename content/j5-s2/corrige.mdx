@@ -1,0 +1,164 @@
+---
+title: Corrigé — Sécurité Kubernetes
+---
+
+# Corrigé — Sécurité Kubernetes
+
+## Exercice 1
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: webapp
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-secure
+  namespace: webapp
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: nginx-secure}
+  template:
+    metadata:
+      labels: {app: nginx-secure}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports: [{containerPort: 8080}]
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+        resources:
+          limits: {cpu: "500m", memory: "256Mi"}
+          requests: {cpu: "100m", memory: "64Mi"}
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: cache
+          mountPath: /var/cache/nginx
+        livenessProbe:
+          httpGet: {path: /, port: 8080}
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        readinessProbe:
+          httpGet: {path: /, port: 8080}
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: cache
+        emptyDir: {}
+```
+
+## Exercice 2 — RBAC
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: webapp-reader
+  namespace: webapp
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-reader
+  namespace: webapp
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: webapp-reader-binding
+  namespace: webapp
+subjects:
+- kind: ServiceAccount
+  name: webapp-reader
+  namespace: webapp
+roleRef:
+  kind: Role
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+```
+
+```bash
+# Vérification
+kubectl auth can-i list pods --as=system:serviceaccount:webapp:webapp-reader -n webapp
+kubectl auth can-i delete deployments --as=system:serviceaccount:webapp:webapp-reader -n webapp
+```
+
+## Exercice 3 — Secrets
+
+```bash
+kubectl create secret generic db-creds \
+  --from-literal=username=dbadmin \
+  --from-literal=password='Sup3rS3cr3t!' \
+  -n webapp
+```
+
+```yaml
+# Volume Secret dans un pod
+containers:
+- name: app
+  volumeMounts:
+  - name: db-creds
+    mountPath: /run/secrets/db
+    readOnly: true
+volumes:
+- name: db-creds
+  secret:
+    secretName: db-creds
+    defaultMode: 0400
+```
+
+## Exercice 4 — NetworkPolicy
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: webapp
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-ingress
+  namespace: webapp
+spec:
+  podSelector:
+    matchLabels: {app: nginx-secure}
+  policyTypes: [Ingress, Egress]
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels: {name: frontend}
+    ports:
+    - protocol: TCP
+      port: 8080
+  egress:
+  - to: [{}]
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+```

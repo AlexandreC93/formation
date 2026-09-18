@@ -1,0 +1,92 @@
+---
+title: Corrigé — Scan de vulnérabilités
+---
+
+# Corrigé — Scan de vulnérabilités
+
+## Exercice 1
+
+```bash
+curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+trivy fs / -f json --severity CRITICAL -o /tmp/trivy-system.json 2>/dev/null
+
+python3 -c "
+import json
+with open('/tmp/trivy-system.json') as f:
+    data = json.load(f)
+for r in data.get('Results',[]):
+    for v in r.get('Vulnerabilities',[]):
+        if v.get('Severity')=='CRITICAL':
+            print(f\"{v['VulnerabilityID']} | {v['PkgName']} {v.get('InstalledVersion','?')} -> {v.get('FixedVersion','no fix')}\")
+" 2>/dev/null | head -20
+```
+
+## Exercice 2
+
+```bash
+for img in nginx:latest python:3.9 alpine:latest; do
+  echo "=== $img ==="
+  COUNT=$(trivy image "$img" --severity CRITICAL --no-progress -f json 2>/dev/null | \
+    python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(len(r.get('Vulnerabilities',[])) for r in d.get('Results',[])))" 2>/dev/null || echo 0)
+  echo "CRITICAL: $COUNT"
+done
+
+echo ""
+echo "Images alternatives recommandées :"
+echo " - nginx:alpine"
+echo " - gcr.io/distroless/python3"
+echo " - python:3.12-slim-bookworm"
+```
+
+## Exercice 3
+
+```bash
+apt update
+apt install unattended-upgrades -y
+unattended-upgrades --dry-run --debug 2>&1 | grep 'Packages that will be upgraded'
+unattended-upgrades -v
+
+# Vérification services
+systemctl --failed
+journalctl -p err -n 20 --since "10 min ago"
+```
+
+## Exercice 4 — Rapport HTML
+
+```bash
+trivy fs / -f json --severity HIGH,CRITICAL -o /tmp/vuln-report.json 2>/dev/null
+
+python3 << 'PY'
+import json, html
+
+with open('/tmp/vuln-report.json') as f:
+    data = json.load(f)
+
+vulns = []
+for result in data.get('Results', []):
+    for v in result.get('Vulnerabilities', []):
+        vulns.append({
+            'id': v.get('VulnerabilityID',''),
+            'pkg': v.get('PkgName',''),
+            'installed': v.get('InstalledVersion',''),
+            'fixed': v.get('FixedVersion','N/A'),
+            'cvss': float((v.get('CVSS') or {}).get('nvd',{}).get('V3Score', 0)),
+            'severity': v.get('Severity',''),
+        })
+
+vulns.sort(key=lambda x: x['cvss'], reverse=True)
+
+with open('/tmp/vuln-report.html', 'w') as f:
+    f.write('''<!DOCTYPE html><html><head><title>Rapport Vulnérabilités</title>
+<style>body{font-family:sans-serif;background:#0d1117;color:#c9d1d9;padding:20px}
+table{width:100%;border-collapse:collapse}th,td{padding:8px;border:1px solid #30363d}
+th{background:#161b22}.CRITICAL{color:#ff4d4f}.HIGH{color:#ff7a00}</style></head><body>
+<h1>Rapport Vulnérabilités Trivy</h1><table>
+<tr><th>CVE</th><th>Package</th><th>Version</th><th>Fix</th><th>CVSS</th><th>Niveau</th></tr>''')
+    for v in vulns[:50]:
+        f.write(f'<tr><td>{html.escape(v["id"])}</td><td>{html.escape(v["pkg"])}</td><td>{html.escape(v["installed"])}</td><td>{html.escape(str(v["fixed"]))}</td><td>{v["cvss"]}</td><td class="{v["severity"]}">{v["severity"]}</td></tr>')
+    f.write('</table></body></html>')
+print(f'Rapport : /tmp/vuln-report.html ({len(vulns)} vulnérabilités)')
+PY
+```

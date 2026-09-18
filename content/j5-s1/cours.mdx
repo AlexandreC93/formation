@@ -1,0 +1,114 @@
+---
+title: Docker & Sécurité des Conteneurs
+---
+
+# Docker & Sécurité des Conteneurs
+
+## Concepts fondamentaux de sécurité Docker
+
+Les conteneurs Docker utilisent :
+- **Namespaces** : isolation (PID, réseau, FS, UTS)
+- **cgroups** : limitation des ressources
+- **Capabilities** : restriction des privilèges root
+- **seccomp** : filtrage des appels système
+
+```bash
+# Vérifier l'installation Docker
+docker version
+docker info | grep -E 'Security|Root Dir|Logging'
+
+# Informations de sécurité d'un conteneur
+docker inspect nginx | jq '.[0].HostConfig | {Privileged, CapAdd, CapDrop, SecurityOpt}'
+```
+
+## Bonnes pratiques Dockerfile
+
+```dockerfile
+# Dockerfile sécurisé
+FROM python:3.12-slim-bookworm
+
+# Mettre à jour les paquets de sécurité
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
+# Utilisateur non-root
+RUN groupadd -r appgroup && useradd -r -g appgroup appuser
+
+WORKDIR /app
+
+COPY --chown=appuser:appgroup requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY --chown=appuser:appgroup . .
+
+USER appuser
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD curl -f http://localhost:8000/health || exit 1
+
+CMD ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+## Sécuriser le runtime Docker
+
+```bash
+# Limiter les ressources (anti-DoS)
+docker run -d \
+  --memory 512m \
+  --memory-swap 512m \
+  --cpus 1.0 \
+  --pids-limit 50 \
+  --ulimit nofile=1024:1024 \
+  nginx
+
+# Retirer les capabilities inutiles
+docker run --cap-drop ALL --cap-add NET_BIND_SERVICE nginx
+
+# Lecture seule (immutable)
+docker run --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=65536k \
+  nginx
+
+# Sans nouveau privilèges
+docker run --security-opt no-new-privileges nginx
+
+# AppArmor
+docker run --security-opt apparmor=docker-default nginx
+```
+
+## Docker Compose sécurisé
+
+```yaml
+# docker-compose.yml
+version: '3.8'
+
+services:
+  webapp:
+    image: monapp:v1.0
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+      - apparmor:docker-default
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+```

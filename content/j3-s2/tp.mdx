@@ -1,0 +1,40 @@
+---
+title: TP — Infrastructure PKI interne
+---
+
+# TP — Infrastructure PKI interne
+
+## Objectifs
+- Construire une PKI à deux niveaux (Root CA + Intermediate CA)
+- Émettre et révoquer des certificats
+- Intégrer les certificats dans nginx
+
+## Durée estimée : 45 minutes
+
+## Exercice 1 — PKI à deux niveaux
+
+1. Créez une Root CA avec une validité de 10 ans (clé RSA 4096)
+2. Créez une Intermediate CA valide 5 ans, signée par la Root CA
+3. Émettez un certificat serveur avec les SAN suivants :
+   - `DNS: formation.local`
+   - `DNS: www.formation.local`
+   - `IP: 127.0.0.1`
+4. Vérifiez la chaîne complète
+
+## Exercice 2 — Authentification client mutuelle
+
+1. Émettez un certificat client pour l'utilisateur `stagiaire01`
+2. Configurez nginx pour requiert un certificat client valide (mTLS)
+3. Testez l'accès avec et sans certificat client
+
+## Exercice 3 — Révocation (CRL)
+
+1. Révoquez le certificat client `stagiaire01`
+2. Générez la CRL et configurez nginx pour la vérifier
+3. Montrez que la connexion est refusée après révocation
+
+## Exercice 4 — OCSP
+
+1. Expliquez la différence CRL vs OCSP
+2. Vérifiez le statut OCSP d'un certificat Let's Encrypt
+3. Configurez OCSP Stapling dans nginx

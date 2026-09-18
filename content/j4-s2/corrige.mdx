@@ -1,0 +1,111 @@
+---
+title: Corrigé — Audit et journalisation
+---
+
+# Corrigé — Audit système
+
+## Exercice 1
+
+```bash
+apt install auditd -y
+
+cat > /etc/audit/rules.d/formation-audit.rules << 'EOF'
+-w /etc/passwd -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/group -p wa -k identity
+-w /etc/gshadow -p wa -k identity
+
+-w /usr/bin/sudo -p x -k sudo-use
+-w /etc/sudoers -p wa -k sudoers
+-w /etc/sudoers.d/ -p wa -k sudoers
+
+-w /var/log/auth.log -p wa -k ssh-auth
+-w /etc/ssh/sshd_config -p wa -k ssh-config
+
+-a always,exit -F arch=b64 -S execve -F uid=0 -k root-commands
+
+-e 2
+EOF
+
+augenrules --load
+auditctl -l
+```
+
+## Exercice 2
+
+```bash
+# Générer des événements
+useradd testuser-audit
+sudo ls /root
+echo "modif" >> /etc/group
+
+# Retrouver dans les logs
+ausearch -k identity --ts today
+ausearch -k sudo-use --ts today
+ausearch -k root-commands --ts today -i
+
+# Rapport HTML
+cat > /tmp/audit-report.html << 'HTMLEOF'
+<!DOCTYPE html><html><head><title>Audit Report</title>
+<style>body{font-family:sans-serif;background:#1a1a2e;color:#ccc;padding:20px}
+pre{background:#0f3460;padding:15px;border-radius:8px;color:#a3f;}
+h1,h2{color:#6af;}</style></head><body>
+<h1>Rapport d'Audit Linux</h1>
+<h2>Authentifications</h2><pre>
+HTMLEOF
+journalctl -u sshd --since "today" | tail -20 >> /tmp/audit-report.html
+echo '</pre></body></html>' >> /tmp/audit-report.html
+```
+
+## Exercice 3
+
+```bash
+# Script de détection
+cat > /opt/audit-alert.sh << 'SCRIPT'
+#!/bin/bash
+LOGFILE="/var/log/audit-alerts.log"
+TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+
+SUSPICIOUS=$(ausearch -k access-denied --ts today 2>/dev/null | wc -l)
+if [ "$SUSPICIOUS" -gt 10 ]; then
+    echo "[$TIMESTAMP] ALERTE : $SUSPICIOUS refus détectés" >> $LOGFILE
+    ausearch -k access-denied --ts today 2>/dev/null | tail -5 >> $LOGFILE
+fi
+
+IDENTITY=$(ausearch -k identity --ts today 2>/dev/null | grep -c 'type=SYSCALL')
+if [ "$IDENTITY" -gt 0 ]; then
+    echo "[$TIMESTAMP] ATTENTION : $IDENTITY modifications identité" >> $LOGFILE
+fi
+SCRIPT
+chmod +x /opt/audit-alert.sh
+```
+
+## Exercice 4
+
+```bash
+# Logrotate pour auditd
+cat > /etc/logrotate.d/audit << 'EOF'
+/var/log/audit/audit.log {
+    weekly
+    rotate 52
+    compress
+    delaycompress
+    missingok
+    notifempty
+    postrotate
+        /sbin/service auditd condrestart 2>/dev/null || true
+    endscript
+}
+EOF
+
+# Estimation de l'espace
+DURE_SEMAINE=$(du -s /var/log/audit/ | awk '{print $1}')
+echo "Espace hebdomadaire : ${DURE_SEMAINE} kB"
+echo "Espace annuel estimé : $(( DURE_SEMAINE * 52 / 1024 )) MB"
+
+# Alerte espace disque
+USED=$(df /var/log | tail -1 | awk '{print $5}' | tr -d '%')
+if [ "$USED" -gt 80 ]; then
+  echo "ALERTE : /var/log à ${USED}% de capacité" >&2
+fi
+```

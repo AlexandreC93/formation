@@ -1,0 +1,40 @@
+---
+title: TP — Sécurité Kubernetes
+---
+
+# TP — Sécurité Kubernetes
+
+## Objectifs
+- Déployer une application avec bonnes pratiques de sécurité
+- Configurer RBAC et NetworkPolicies
+- Gérer les Secrets de façon sécurisée
+
+## Durée estimée : 45 minutes
+
+## Exercice 1 — Déploiement sécurisé
+
+Créez un Deployment pour nginx qui :
+1. Tourne dans un namespace dédié `webapp`
+2. Utilise un SecurityContext : non-root, read-only FS, drop ALL caps
+3. A des resource limits (CPU: 0.5, Memory: 256Mi)
+4. A un liveness et readiness probe
+
+## Exercice 2 — RBAC
+
+1. Créez un ServiceAccount `webapp-reader`
+2. Créez un Role qui permet uniquement de lister et lire les pods
+3. Liez ce role au ServiceAccount
+4. Vérifiez que le ServiceAccount ne peut pas modifier les déploiements
+
+## Exercice 3 — Secrets
+
+1. Créez un Secret contenant les credentials d'une base de données fictive
+2. Montez le Secret dans un pod comme volume (pas comme variable d'env)
+3. Vérifiez les permissions du volume monté dans le pod
+
+## Exercice 4 — NetworkPolicy
+
+1. Créez une NetworkPolicy qui interdit tout trafic entrant et sortant par défaut
+2. Autorisez uniquement le trafic entrant depuis le namespace `frontend`
+3. Autorisez le trafic sortant vers le DNS (port 53)
+4. Testez que la politique est effective

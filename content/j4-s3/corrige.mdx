@@ -1,0 +1,99 @@
+---
+title: Corrigé — Durcissement CIS
+---
+
+# Corrigé — Durcissement CIS Benchmark
+
+## Exercice 1
+
+```bash
+apt install lynis -y
+lynis audit system 2>&1 | tee /tmp/lynis-initial.log
+grep 'Hardening index' /tmp/lynis-initial.log
+grep 'Suggestion' /var/log/lynis.log | head -10
+```
+
+## Exercice 2
+
+```bash
+#!/bin/bash
+# CIS Level 1
+
+# FS inutiles
+for mod in cramfs freevxfs jffs2 hfs hfsplus squashfs udf; do
+  echo "install $mod /bin/true" > /etc/modprobe.d/${mod}.conf
+done
+
+# /tmp sécurisé
+if ! grep -q 'tmpfs.*nosuid' /etc/fstab; then
+  echo 'tmpfs /tmp tmpfs defaults,rw,nosuid,nodev,noexec,relatime 0 0' >> /etc/fstab
+fi
+mount -o remount /tmp 2>/dev/null || true
+
+# ASLR
+echo 'kernel.randomize_va_space = 2' > /etc/sysctl.d/01-aslr.conf
+sysctl -p /etc/sysctl.d/01-aslr.conf
+
+# Réseau
+cat > /etc/sysctl.d/01-cis-network.conf << 'EOF'
+net.ipv4.ip_forward = 0
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.tcp_syncookies = 1
+net.ipv4.conf.all.log_martians = 1
+EOF
+sysctl -p /etc/sysctl.d/01-cis-network.conf
+
+# Hash root
+grep '^root:' /etc/shadow
+```
+
+## Exercice 3 — PAM
+
+```bash
+apt install libpam-pwquality libpam-pwhistory -y
+
+cat > /etc/security/pwquality.conf << 'EOF'
+minlen = 14
+minclass = 4
+ucredit = -1
+dcredit = -1
+ocredit = -1
+lcredit = -1
+maxrepeat = 3
+EOF
+
+# PAM password
+cat > /etc/pam.d/common-password << 'EOF'
+password requisite pam_pwquality.so retry=3
+password requisite pam_pwhistory.so remember=5 use_authtok
+password [success=1 default=ignore] pam_unix.so obscure sha512 rounds=65536 use_authtok
+password requisite pam_deny.so
+password required pam_permit.so
+EOF
+
+# Verrouillage compte
+cat > /etc/pam.d/common-auth << 'EOF'
+auth required pam_faillock.so preauth silent audit deny=5 unlock_time=900
+auth [success=1 default=ignore] pam_unix.so nullok
+auth [default=die] pam_faillock.so authfail audit deny=5 unlock_time=900
+auth sufficient pam_faillock.so authsucc audit deny=5 unlock_time=900
+auth requisite pam_deny.so
+auth required pam_permit.so
+EOF
+```
+
+## Exercice 4
+
+```bash
+lynis audit system 2>&1 | tee /tmp/lynis-post.log
+grep 'Hardening index' /tmp/lynis-post.log
+
+echo "=== AVANT ==="
+grep 'Hardening index' /tmp/lynis-initial.log
+echo "=== APRES ==="
+grep 'Hardening index' /tmp/lynis-post.log
+```

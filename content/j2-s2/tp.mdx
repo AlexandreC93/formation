@@ -1,0 +1,44 @@
+---
+title: TP — Configuration firewall
+---
+
+# TP — Configuration firewall
+
+## Objectifs
+- Concevoir une politique de filtrage réseau
+- Implémenter avec nftables
+- Mettre en place fail2ban
+
+## Durée estimée : 45 minutes
+
+## Exercice 1 — Politique de filtrage
+
+Écrivez un ruleset nftables pour un serveur web de production qui :
+- Refuse tout par défaut (INPUT et FORWARD)
+- Accepte SSH uniquement depuis le réseau `10.10.0.0/16`
+- Accepte HTTP (80) et HTTPS (443) depuis n'importe quelle IP
+- Accepte ICMP echo-request limité à 5/seconde
+- Log tous les paquets refusés
+- Autorise le trafic sortant sans restriction
+
+## Exercice 2 — NAT et redirection
+
+1. Configurez le masquerade NAT pour que les machines du réseau `192.168.100.0/24` puissent accéder à Internet via votre machine
+2. Redédirigez le port 8080 de votre machine vers le port 80 d'une machine interne `192.168.100.10`
+3. Activez le forwarding IP au niveau du noyau
+
+## Exercice 3 — fail2ban
+
+1. Configurez fail2ban pour :
+   - SSH : 3 tentatives max, bannissement 24h
+   - Si nginx est installé : protéger les URLs d'administration (`/admin`, `/wp-admin`)
+2. Simulez des échecs de connexion SSH et vérifiez le bannissement
+3. Ajoutez votre IP locale en whitelist (ignoreip)
+
+## Exercice 4 — Audit du pare-feu
+
+1. Listez toutes les règles actives avec leur compteur de paquets
+2. Testez votre configuration depuis une machine externe (ou localhost)
+3. Exportez la configuration nftables en un script reproductible
+
+> **Attention** : Si vous travaillez à distance, assurez-vous de ne pas vous couper l'accès SSH avant de valider vos règles !

@@ -1,0 +1,39 @@
+---
+title: TP — Durcissement SSH
+---
+
+# TP — Durcissement SSH
+
+## Objectifs
+- Générer et déployer des clés SSH sécurisées
+- Durcir la configuration sshd
+- Mettre en place un bastion SSH
+
+## Durée estimée : 45 minutes
+
+## Exercice 1 — Infrastructure de clés
+
+1. Générez 3 paires de clés Ed25519 pour : `ops-admin`, `deployer`, et `ci-cd`
+2. Pour `ci-cd` : ajoutez des restrictions `command` et `no-port-forwarding` dans `authorized_keys`
+3. Générez une paire de clés avec une durée de vie limitée (SSH certificate authority)
+
+## Exercice 2 — Durcissement sshd
+
+Configurez `/etc/ssh/sshd_config` pour :
+1. Interdire la connexion root et les mots de passe
+2. N'autoriser que Ed25519 et ECDSA comme types de clés
+3. Restreindre les algorithmes de chiffrement aux seuls modernes
+4. Limiter les utilisateurs autorisés à `ops-admin` et `deployer`
+5. Fermer la session inactive après 5 minutes
+
+## Exercice 3 — Bastion SSH
+
+1. Configurez un bastion (proxy jump) pour accéder aux machines internes
+2. Ajoutez un `~/.ssh/config` qui route les connexions `prod-*` via le bastion automatiquement
+3. Vérifiez qu'on ne peut pas accéder aux machines internes sans passer par le bastion
+
+## Exercice 4 — Audit SSH
+
+1. Testez votre configuration avec `ssh-audit` (outil)
+2. Obtenez une note A+ sur les algorithmes utilisés
+3. Détectez les connexions SSH suspectes dans les logs

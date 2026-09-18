@@ -1,0 +1,41 @@
+---
+title: TP — Durcissement CIS Benchmark
+---
+
+# TP — Durcissement CIS Benchmark
+
+## Objectifs
+- Évaluer la conformité d'un système avec Lynis
+- Appliquer les contrôles CIS niveau 1
+- Mesurer l'amélioration du score
+
+## Durée estimée : 45 minutes
+
+## Exercice 1 — Baseline Lynis
+
+1. Installez Lynis et lancez un audit complet
+2. Notez le score de durcissement initial (Hardening Index)
+3. Listez les 10 suggestions prioritaires
+
+## Exercice 2 — Implémentation CIS niveau 1
+
+Appliquez ces contrôles et documentez chaque étape :
+1. Désactiver les systèmes de fichiers inutilisables
+2. Sécuriser les options de montage (`/tmp`, `/var/tmp`, `/dev/shm`)
+3. Activer ASLR (niveau 2)
+4. Configurer les paramètres sysctl réseau anti-spoofing
+5. Vérifier que root a un hash de mot de passe valide
+
+## Exercice 3 — Politique de comptes PAM
+
+Configurez PAM pour :
+1. Longueur minimale de mot de passe : 14 caractères
+2. Complexité : au moins 1 majuscule, 1 chiffre, 1 symbole
+3. Historique : interdire les 5 derniers mots de passe
+4. Verrouillage : 5 tentatives échouées = 15 minutes de blocage
+
+## Exercice 4 — Post-durcissement
+
+1. Relancez Lynis et comparez le score
+2. Documentez les améliorations dans un rapport
+3. Identifiez les contrôles non appliqués et justifiez

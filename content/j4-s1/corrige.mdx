@@ -1,0 +1,112 @@
+---
+title: Corrigé — SELinux/AppArmor
+---
+
+# Corrigé — Implémentation SELinux/AppArmor
+
+## Exercice 1
+
+```bash
+# Processus confinés (SELinux)
+ps auxZ | grep -v 'system_u\|kernel_t' | head -20
+
+# Mode complain (AppArmor)
+if command -v aa-status &>/dev/null; then
+  aa-status | grep -A5 'complain'
+else
+  # SELinux : mode permissif par processus
+  ps auxZ | grep 'permissive_'
+fi
+
+# Refus 24h
+if command -v ausearch &>/dev/null; then
+  ausearch -m avc -ts today | audit2why
+else
+  journalctl -k | grep 'apparmor="DENIED"' | tail -20
+fi
+```
+
+## Exercice 2 — Nginx + /opt
+
+```bash
+# Installation
+apt install nginx -y
+
+# Page dans /opt
+mkdir -p /opt/webapp
+echo '<h1>Formation Sécurité</h1>' > /opt/webapp/index.html
+
+# Config nginx
+cat > /etc/nginx/sites-available/webapp << 'EOF'
+server {
+    listen 80;
+    root /opt/webapp;
+    index index.html;
+}
+EOF
+ln -sf /etc/nginx/sites-available/webapp /etc/nginx/sites-enabled/
+nginx -t && systemctl reload nginx
+
+# SELinux : fixer le contexte
+semanage fcontext -a -t httpd_sys_content_t '/opt/webapp(/.*)?'
+restorecon -Rv /opt/webapp/
+
+# AppArmor (Ubuntu)
+aa-complain /etc/apparmor.d/usr.sbin.nginx
+# Voir les logs :
+grep 'nginx' /var/log/syslog | grep apparmor | tail -10
+# Puis ajouter dans le profil : /opt/webapp/** r,
+aa-enforce /etc/apparmor.d/usr.sbin.nginx
+```
+
+## Exercice 3 — Profil AppArmor pour Python
+
+```bash
+cat > /etc/apparmor.d/opt.monitor << 'EOF'
+#include <tunables/global>
+
+/usr/bin/python3* /opt/monitor.py {
+  #include <abstractions/base>
+  #include <abstractions/python>
+
+  /opt/monitor.py r,
+  /usr/bin/python3* mr,
+
+  /proc/meminfo r,
+  /proc/cpuinfo r,
+
+  /var/log/monitor.log rw,
+
+  deny /etc/** r,
+  deny /home/** rw,
+}
+EOF
+
+apparmor_parser -r /etc/apparmor.d/opt.monitor
+aa-enforce /etc/apparmor.d/opt.monitor
+python3 /opt/monitor.py
+aa-status | grep monitor
+```
+
+## Exercice 4 — Résolution de refus
+
+```bash
+# Simulation : déplacer config nginx
+mv /etc/nginx /etc/nginx.bak
+ln -s /opt/nginx-conf /etc/nginx
+ls -laZ /opt/nginx-conf  # Contexte incorrect !
+
+# Identifier le refus
+audit2why < /var/log/audit/audit.log | tail -20
+# ou :
+journalctl -k | grep 'apparmor.*DENIED.*nginx' | tail -5
+
+# Correction SELinux
+semanage fcontext -a -t httpd_config_t '/opt/nginx-conf(/.*)?'
+restorecon -Rv /opt/nginx-conf
+
+# Correction AppArmor : ajouter la règle dans le profil
+# /opt/nginx-conf/** r,
+apparmor_parser -r /etc/apparmor.d/usr.sbin.nginx
+nginx -t && systemctl reload nginx
+```

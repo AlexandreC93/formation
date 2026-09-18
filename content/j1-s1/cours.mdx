@@ -1,0 +1,113 @@
+---
+title: Architecture Linux & Arborescence
+---
+
+# Architecture Linux & Arborescence
+
+## Le noyau Linux
+
+Linux est un **noyau monolithique modulaire** développé par Linus Torvalds en 1991. Il assure l'interface entre le matériel et les applications utilisateur.
+
+Le noyau gère :
+- La mémoire virtuelle et physique
+- L'ordonnancement des processus (scheduler CFS)
+- Les pilotes de périphériques
+- Les appels système (`syscalls`)
+- La sécurité et le contrôle d'accès
+
+## Arborescence FHS (Filesystem Hierarchy Standard)
+
+| Répertoire | Contenu |
+|---|---|
+| `/bin` | Binaires essentiels (bash, ls, cp) |
+| `/sbin` | Binaires d'administration système |
+| `/etc` | Fichiers de configuration |
+| `/var` | Données variables (logs, spools) |
+| `/tmp` | Fichiers temporaires (vidés au reboot) |
+| `/home` | Répertoires personnels des utilisateurs |
+| `/root` | Répertoire de l'administrateur |
+| `/proc` | Pseudo-FS : état du noyau en temps réel |
+| `/sys` | Pseudo-FS : périphériques et pilotes |
+| `/dev` | Fichiers de périphériques |
+| `/lib` | Bibliothèques partagées |
+| `/usr` | Applications et données utilisateur |
+| `/boot` | Noyau, initramfs, GRUB |
+
+## Navigation de base
+
+```bash
+# Afficher le répertoire courant
+pwd
+
+# Lister avec détails et fichiers cachés
+ls -lah /etc
+
+# Arborescence récursive (3 niveaux)
+tree -L 3 /etc
+
+# Trouver un fichier par nom
+find / -name "sshd_config" 2>/dev/null
+
+# Taille d'un répertoire
+du -sh /var/log/
+
+# Espace disque
+df -hT
+```
+
+## Le pseudo-système de fichiers /proc
+
+```bash
+# Version du noyau
+cat /proc/version
+
+# Informations CPU
+cat /proc/cpuinfo | grep -E 'model name|cpu cores' | head -4
+
+# Mémoire disponible
+cat /proc/meminfo | head -10
+
+# Processus actifs
+ls /proc/ | grep -E '^[0-9]+$' | wc -l
+
+# Paramètres noyau
+sysctl -a | grep 'net.ipv4'
+```
+
+## Types de fichiers Linux
+
+```bash
+# Identifier le type d'un fichier
+file /bin/bash        # ELF 64-bit executable
+file /etc/passwd      # ASCII text
+file /dev/sda         # block special
+file /dev/null        # character special
+
+# Types dans ls -l :
+# - : fichier régulier
+# d : répertoire
+# l : lien symbolique
+# b : périphérique bloc
+# c : périphérique caractère
+# p : tube nommé (pipe)
+# s : socket
+```
+
+## Points de montage
+
+```bash
+# Voir les systèmes de fichiers montés
+mount | column -t
+
+# Ou avec systemd
+findmnt --tree
+
+# Monter une partition
+mount -t ext4 /dev/sdb1 /mnt/data
+
+# Monter en lecture seule
+mount -o ro /dev/sdc1 /mnt/backup
+
+# Démonter
+umount /mnt/data
+```
