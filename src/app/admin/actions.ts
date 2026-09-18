@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation';
 import {
   updateActiveSegment,
   toggleSolution,
+  toggleArchiveDownload,
   createSession,
   resetSession,
   deleteSession,
@@ -25,11 +26,20 @@ export async function toggleSolutionAction(formData: FormData) {
   revalidatePath('/admin');
 }
 
+export async function toggleArchiveAction(formData: FormData) {
+  const sessionCode = formData.get('sessionCode') as string;
+  await toggleArchiveDownload(sessionCode);
+  revalidatePath('/admin');
+}
+
 export async function createSessionAction(formData: FormData): Promise<void> {
   const code = (formData.get('code') as string)?.trim().toUpperCase();
   const name = (formData.get('name') as string)?.trim();
-  if (!code || !name) return;
-  await createSession(code, name);
+  const trainingId = (formData.get('trainingId') as string)?.trim();
+  const expiresAt = (formData.get('expiresAt') as string)?.trim();
+
+  if (!code || !name || !trainingId || !expiresAt) return;
+  await createSession(code, name, trainingId, new Date(expiresAt).toISOString());
   revalidatePath('/admin');
 }
 

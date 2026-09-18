@@ -7,8 +7,11 @@ export const redis = new Redis({
 
 export interface SessionData {
   name: string;
+  training_id: string;
   active_segment: number;
   unlocked_solutions: number[];
+  allow_archive_download: boolean;
+  expires_at: string;
   created_at: string;
 }
 
@@ -30,15 +33,21 @@ export async function sessionExists(code: string): Promise<boolean> {
 
 export async function createSession(
   code: string,
-  name: string
+  name: string,
+  training_id: string,
+  expires_at: string
 ): Promise<void> {
   const session: SessionData = {
     name,
+    training_id,
     active_segment: 1,
     unlocked_solutions: [],
+    allow_archive_download: false,
+    expires_at,
     created_at: new Date().toISOString(),
   };
   await redis.set(sessionKey(code), session);
+  await redis.sadd('active_sessions', code.toUpperCase());
 }
 
 export async function updateActiveSegment(
@@ -49,7 +58,7 @@ export async function updateActiveSegment(
   if (!session) throw new Error('Session introuvable');
   await redis.set(sessionKey(code), {
     ...session,
-    active_segment: Math.max(1, Math.min(20, segmentIndex)),
+    active_segment: Math.max(1, segmentIndex),
   });
 }
 
@@ -69,6 +78,15 @@ export async function toggleSolution(
   });
 }
 
+export async function toggleArchiveDownload(code: string): Promise<void> {
+  const session = await getSession(code);
+  if (!session) throw new Error('Session introuvable');
+  await redis.set(sessionKey(code), {
+    ...session,
+    allow_archive_download: !session.allow_archive_download,
+  });
+}
+
 export async function resetSession(code: string): Promise<void> {
   const session = await getSession(code);
   if (!session) throw new Error('Session introuvable');
@@ -76,21 +94,26 @@ export async function resetSession(code: string): Promise<void> {
     ...session,
     active_segment: 1,
     unlocked_solutions: [],
+    allow_archive_download: false,
   });
 }
 
 export async function deleteSession(code: string): Promise<void> {
-  await redis.del(sessionKey(code));
+  const upperCode = code.toUpperCase();
+  await redis.del(sessionKey(upperCode));
+  await redis.srem('active_sessions', upperCode);
 }
 
 export async function listSessions(): Promise<Array<{ code: string; data: SessionData }>> {
-  const keys = await redis.keys('session:*');
-  if (!keys.length) return [];
+  const activeKeys = await redis.smembers('active_sessions');
+  if (!activeKeys || activeKeys.length === 0) return [];
+  
   const pipeline = redis.pipeline();
-  keys.forEach((k) => pipeline.get(k));
+  activeKeys.forEach((k) => pipeline.get(sessionKey(k as string)));
   const results = await pipeline.exec<SessionData[]>();
-  return keys.map((key, i) => ({
-    code: key.replace('session:', ''),
+  
+  return activeKeys.map((key, i) => ({
+    code: key as string,
     data: results[i],
   }));
 }

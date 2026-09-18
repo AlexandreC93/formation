@@ -1,7 +1,7 @@
 'use server';
 
 import { redirect } from 'next/navigation';
-import { sessionExists } from '@/lib/redis';
+import { getSession } from '@/lib/redis';
 import { setSessionCookie } from '@/lib/auth';
 
 type ActionState = { error?: string } | undefined;
@@ -16,9 +16,14 @@ export async function loginAction(
     return { error: 'Veuillez saisir un code de session.' };
   }
 
-  const exists = await sessionExists(code);
-  if (!exists) {
-    return { error: 'Code de session invalide ou expiré.' };
+  const session = await getSession(code);
+  if (!session) {
+    return { error: 'Code de session invalide ou introuvable.' };
+  }
+
+  const expiresAt = new Date(session.expires_at);
+  if (isNaN(expiresAt.getTime()) || expiresAt < new Date()) {
+    return { error: 'Code de session expiré.' };
   }
 
   await setSessionCookie(code);

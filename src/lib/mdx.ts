@@ -19,12 +19,15 @@ const rehypePrettyCodeOptions = {
 };
 
 export async function loadMDX(
+  trainingId: string,
   segmentSlug: string,
   type: MdxType
 ): Promise<MdxResult | null> {
   const filePath = join(
     process.cwd(),
     'content',
+    'trainings',
+    trainingId,
     segmentSlug,
     `${type}.mdx`
   );

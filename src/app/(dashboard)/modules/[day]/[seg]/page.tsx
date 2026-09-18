@@ -1,7 +1,7 @@
 import { notFound, redirect } from 'next/navigation';
 import { getSessionCode } from '@/lib/auth';
 import { getSession } from '@/lib/redis';
-import { getSegmentBySlug } from '@/lib/segments';
+import { getTraining, getSegmentBySlug } from '@/lib/trainings';
 import { loadMDX } from '@/lib/mdx';
 import { LockedScreen } from '@/components/locked-screen';
 import { SegmentTabs } from '@/components/segment-tabs';
@@ -21,12 +21,15 @@ export default async function ModulePage({ params }: PageProps) {
   const session = await getSession(code);
   if (!session) redirect('/login');
 
+  const trainingId = session.training_id || 'administration-linux';
+  const config = await getTraining(trainingId);
+  if (!config) notFound();
+
   // 3. Résolution du segment demandé
-  const segment = getSegmentBySlug(day, seg);
+  const segment = getSegmentBySlug(config, day, seg);
   if (!segment) notFound();
 
   // 4. Contrôle d'accès strict côté serveur
-  //    Si verrouillé : zéro contenu MDX dans le payload HTML
   if (segment.index > session.active_segment) {
     return (
       <div className="h-full flex items-center justify-center">
@@ -37,17 +40,20 @@ export default async function ModulePage({ params }: PageProps) {
 
   // 5. Chargement des contenus MDX
   const [coursResult, tpResult] = await Promise.all([
-    loadMDX(segment.slug, 'cours'),
-    loadMDX(segment.slug, 'tp'),
+    loadMDX(trainingId, segment.slug, 'cours'),
+    loadMDX(trainingId, segment.slug, 'tp'),
   ]);
 
   if (!coursResult || !tpResult) notFound();
 
-  // 6. Corrigé uniquement si explicitement libéré par le formateur
+  // 6. Corrigé uniquement si explicitement libéré
   const solutionUnlocked = session.unlocked_solutions.includes(segment.index);
   const corrigeResult = solutionUnlocked
-    ? await loadMDX(segment.slug, 'corrige')
+    ? await loadMDX(trainingId, segment.slug, 'corrige')
     : null;
+
+  // On peut récupérer le titre depuis le frontmatter du cours si présent
+  const segmentTitle = (coursResult.frontmatter?.title as string) || segment.title;
 
   return (
     <div className="h-full">
@@ -55,18 +61,16 @@ export default async function ModulePage({ params }: PageProps) {
         coursContent={coursResult.content}
         tpContent={tpResult.content}
         corrigeContent={corrigeResult?.content ?? null}
-        segmentTitle={`${segment.dayLabel} — S${segment.seg} : ${segment.title}`}
+        segmentTitle={`${segment.dayLabel} — S${segment.seg} : ${segmentTitle}`}
       />
     </div>
   );
 }
 
 export async function generateMetadata({ params }: PageProps) {
-  const { day, seg } = await params;
-  const segment = getSegmentBySlug(day, seg);
+  // On ne peut pas facilement fetcher le titre dynamique sans tout re-parser ici.
+  // Un titre générique suffit.
   return {
-    title: segment
-      ? `${segment.title} | Formation Technique`
-      : 'Module | Formation Technique',
+    title: 'Module | Formation Technique',
   };
 }

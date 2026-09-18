@@ -3,8 +3,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Lock, Unlock, ChevronDown, ChevronRight, GraduationCap, LogOut } from 'lucide-react';
-import { SEGMENTS, DAYS, DAY_TITLES } from '@/lib/segments';
+import { Lock, Unlock, ChevronDown, ChevronRight, GraduationCap, LogOut, Download } from 'lucide-react';
+import type { Segment, TrainingConfig } from '@/lib/trainings';
 
 interface SessionStatus {
   active_segment: number;
@@ -14,9 +14,18 @@ interface SessionStatus {
 interface SidebarProps {
   initialStatus: SessionStatus;
   sessionName: string;
+  trainingConfig: TrainingConfig;
+  segments: Segment[];
+  allowArchiveDownload: boolean;
 }
 
-export function Sidebar({ initialStatus, sessionName }: SidebarProps) {
+export function Sidebar({
+  initialStatus,
+  sessionName,
+  trainingConfig,
+  segments,
+  allowArchiveDownload,
+}: SidebarProps) {
   const pathname = usePathname();
   const [status, setStatus] = useState<SessionStatus>(initialStatus);
   const [openDays, setOpenDays] = useState<Record<number, boolean>>({});
@@ -34,7 +43,7 @@ export function Sidebar({ initialStatus, sessionName }: SidebarProps) {
         setStatus(data);
       }
     } catch {
-      // Polling silencieux — pas d'alerte en cas d'erreur réseau
+      // Polling silencieux
     }
   }, []);
 
@@ -45,11 +54,11 @@ export function Sidebar({ initialStatus, sessionName }: SidebarProps) {
 
   // Ouvrir automatiquement le jour du segment actif
   useEffect(() => {
-    const activeSegment = SEGMENTS.find((s) => s.index === status.active_segment);
+    const activeSegment = segments.find((s) => s.index === status.active_segment);
     if (activeSegment) {
       setOpenDays((prev) => ({ ...prev, [activeSegment.day]: true }));
     }
-  }, [status.active_segment]);
+  }, [status.active_segment, segments]);
 
   // Ouvrir le jour de la page courante
   useEffect(() => {
@@ -63,6 +72,8 @@ export function Sidebar({ initialStatus, sessionName }: SidebarProps) {
     setOpenDays((prev) => ({ ...prev, [day]: !prev[day] }));
   };
 
+  const DAYS = Array.from({ length: trainingConfig.totalDays }, (_, i) => i + 1);
+
   return (
     <aside className="flex flex-col w-72 h-screen bg-slate-950/80 border-r border-white/5 overflow-y-auto flex-shrink-0">
       {/* Logo / Titre */}
@@ -72,7 +83,7 @@ export function Sidebar({ initialStatus, sessionName }: SidebarProps) {
             <GraduationCap className="w-5 h-5 text-indigo-400" />
           </div>
           <div>
-            <p className="text-white text-sm font-semibold leading-tight">Formation Technique</p>
+            <p className="text-white text-sm font-semibold leading-tight truncate max-w-[160px]">{trainingConfig.title}</p>
             <p className="text-slate-500 text-xs truncate max-w-[160px]">{sessionName}</p>
           </div>
         </div>
@@ -81,13 +92,12 @@ export function Sidebar({ initialStatus, sessionName }: SidebarProps) {
       {/* Navigation des segments */}
       <nav className="flex-1 p-3 space-y-1" aria-label="Navigation des modules">
         {DAYS.map((day) => {
-          const daySegments = SEGMENTS.filter((s) => s.day === day);
+          const daySegments = segments.filter((s) => s.day === day);
           const isOpen = openDays[day] ?? false;
           const hasAccessible = daySegments.some((s) => s.index <= status.active_segment);
 
           return (
             <div key={day}>
-              {/* En-tête du jour */}
               <button
                 onClick={() => toggleDay(day)}
                 className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
@@ -107,7 +117,7 @@ export function Sidebar({ initialStatus, sessionName }: SidebarProps) {
                       hasAccessible ? 'text-slate-300' : 'text-slate-600'
                     }`}
                   >
-                    {DAY_TITLES[day]}
+                    Jour {day}
                   </span>
                 </div>
                 {isOpen ? (
@@ -117,7 +127,6 @@ export function Sidebar({ initialStatus, sessionName }: SidebarProps) {
                 )}
               </button>
 
-              {/* Liste des segments du jour */}
               {isOpen && (
                 <div className="ml-4 mt-1 space-y-0.5">
                   {daySegments.map((segment) => {
@@ -158,7 +167,16 @@ export function Sidebar({ initialStatus, sessionName }: SidebarProps) {
       </nav>
 
       {/* Pied de sidebar */}
-      <div className="p-3 border-t border-white/5">
+      <div className="p-3 border-t border-white/5 space-y-2">
+        {allowArchiveDownload && (
+          <a
+            href="/api/session/download-archive"
+            className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30 transition-all text-xs border border-emerald-500/30"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Télécharger les supports (ZIP)
+          </a>
+        )}
         <form action="/api/logout" method="post">
           <button
             type="submit"

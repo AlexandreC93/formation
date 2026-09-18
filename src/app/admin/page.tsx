@@ -1,10 +1,11 @@
 import { redirect } from 'next/navigation';
 import { isAdmin } from '@/lib/auth';
 import { listSessions } from '@/lib/redis';
-import { DAYS, DAY_TITLES, getSegmentsByDay } from '@/lib/segments';
+import { getTrainings, getTraining, generateSegments } from '@/lib/trainings';
 import {
   activateSegmentAction,
   toggleSolutionAction,
+  toggleArchiveAction,
   createSessionAction,
   resetSessionAction,
   deleteSessionAction,
@@ -21,6 +22,7 @@ import {
   ShieldCheck,
   Users,
   BookOpen,
+  Archive,
 } from 'lucide-react';
 
 export const dynamic = 'force-dynamic';
@@ -30,6 +32,7 @@ export default async function AdminPage() {
   if (!admin) redirect('/admin/login');
 
   const sessions = await listSessions();
+  const trainings = await getTrainings();
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
@@ -70,16 +73,16 @@ export default async function AdminPage() {
           <div className="bg-white/3 border border-white/5 rounded-2xl p-5">
             <div className="flex items-center gap-3 mb-3">
               <BookOpen className="w-5 h-5 text-emerald-400" />
-              <span className="text-slate-400 text-sm">Total segments</span>
+              <span className="text-slate-400 text-sm">Formations</span>
             </div>
-            <p className="text-3xl font-bold text-white">20</p>
+            <p className="text-3xl font-bold text-white">{trainings.length}</p>
           </div>
           <div className="bg-white/3 border border-white/5 rounded-2xl p-5">
             <div className="flex items-center gap-3 mb-3">
               <CheckCircle className="w-5 h-5 text-amber-400" />
-              <span className="text-slate-400 text-sm">Jours de formation</span>
+              <span className="text-slate-400 text-sm">Système prêt</span>
             </div>
-            <p className="text-3xl font-bold text-white">5</p>
+            <p className="text-3xl font-bold text-white">OK</p>
           </div>
         </div>
 
@@ -89,7 +92,7 @@ export default async function AdminPage() {
             <Plus className="w-4 h-4 text-indigo-400" />
             Créer une nouvelle session
           </h2>
-          <form action={createSessionAction} className="flex gap-3">
+          <form action={createSessionAction} className="flex flex-col md:flex-row gap-3">
             <input
               name="code"
               placeholder="Code session (ex: MININT-2026)"
@@ -98,13 +101,30 @@ export default async function AdminPage() {
             />
             <input
               name="name"
-              placeholder="Intitulé de la formation"
+              placeholder="Intitulé de la promo"
               className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white placeholder-slate-600 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/60 transition-all"
+              required
+            />
+            <select
+              name="trainingId"
+              className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/60 transition-all appearance-none"
+              required
+              defaultValue=""
+            >
+              <option value="" disabled className="bg-slate-900">Choisir une formation...</option>
+              {trainings.map((t) => (
+                <option key={t.id} value={t.id} className="bg-slate-900">{t.title}</option>
+              ))}
+            </select>
+            <input
+              name="expiresAt"
+              type="date"
+              className="bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/60 transition-all"
               required
             />
             <button
               type="submit"
-              className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold rounded-xl transition-all flex items-center gap-2 shadow-lg shadow-indigo-500/20"
+              className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/20"
             >
               <Plus className="w-4 h-4" />
               Créer
@@ -122,137 +142,159 @@ export default async function AdminPage() {
         )}
 
         {/* Sessions */}
-        {sessions.map(({ code, data }) => (
-          <div key={code} className="bg-white/3 border border-white/5 rounded-2xl overflow-hidden">
-            {/* En-tête session */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-white/5 bg-white/2">
-              <div className="flex items-center gap-4">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-white font-bold tracking-wider">{code}</span>
-                    <span className="bg-indigo-500/15 text-indigo-400 text-xs px-2 py-0.5 rounded-full">
-                      Segment actif : {data.active_segment}/20
-                    </span>
+        {sessions.map(async ({ code, data }) => {
+          const trainingId = data.training_id || 'administration-linux';
+          const trainingConfig = await getTraining(trainingId);
+          if (!trainingConfig) return null; // Sécurité si formation supprimée
+
+          const allSegments = generateSegments(trainingConfig);
+          const daysArray = Array.from({ length: trainingConfig.totalDays }, (_, i) => i + 1);
+
+          return (
+            <div key={code} className="bg-white/3 border border-white/5 rounded-2xl overflow-hidden">
+              {/* En-tête session */}
+              <div className="flex items-center justify-between px-6 py-4 border-b border-white/5 bg-white/2">
+                <div className="flex items-center gap-4">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-white font-bold tracking-wider">{code}</span>
+                      <span className="bg-indigo-500/15 text-indigo-400 text-xs px-2 py-0.5 rounded-full">
+                        Segment actif : {data.active_segment}/{allSegments.length}
+                      </span>
+                    </div>
+                    <p className="text-slate-400 text-sm mt-0.5">{data.name} — <span className="text-slate-500">{trainingConfig.title}</span></p>
                   </div>
-                  <p className="text-slate-400 text-sm mt-0.5">{data.name}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <form action={toggleArchiveAction}>
+                    <input type="hidden" name="sessionCode" value={code} />
+                    <button
+                      type="submit"
+                      className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border transition-all text-xs
+                        ${data.allow_archive_download
+                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20'
+                          : 'bg-white/5 text-slate-400 border-white/10 hover:text-white hover:bg-white/10'
+                        }`}
+                    >
+                      <Archive className="w-3.5 h-3.5" />
+                      {data.allow_archive_download ? 'Archive ZIP Activée' : 'Activer Archive ZIP'}
+                    </button>
+                  </form>
+                  <form action={resetSessionAction}>
+                    <input type="hidden" name="sessionCode" value={code} />
+                    <button
+                      type="submit"
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-slate-400 hover:text-white hover:bg-white/5 border border-white/5 transition-all text-xs"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      Réinit.
+                    </button>
+                  </form>
+                  <form action={deleteSessionAction}>
+                    <input type="hidden" name="sessionCode" value={code} />
+                    <button
+                      type="submit"
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-red-400 hover:text-red-300 hover:bg-red-500/10 border border-red-500/10 transition-all text-xs"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      Supprimer
+                    </button>
+                  </form>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
-                <form action={resetSessionAction}>
-                  <input type="hidden" name="sessionCode" value={code} />
-                  <button
-                    type="submit"
-                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-slate-400 hover:text-white hover:bg-white/5 border border-white/5 transition-all text-xs"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    Réinitialiser
-                  </button>
-                </form>
-                <form action={deleteSessionAction}>
-                  <input type="hidden" name="sessionCode" value={code} />
-                  <button
-                    type="submit"
-                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-red-400 hover:text-red-300 hover:bg-red-500/10 border border-red-500/10 transition-all text-xs"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    Supprimer
-                  </button>
-                </form>
-              </div>
-            </div>
 
-            {/* Grille des 5 jours */}
-            <div className="p-6 space-y-6">
-              {DAYS.map((day) => (
-                <div key={day}>
-                  <h3 className="text-slate-400 text-xs font-semibold uppercase tracking-wider mb-3">
-                    Jour {day} — {DAY_TITLES[day]}
-                  </h3>
-                  <div className="grid grid-cols-4 gap-3">
-                    {getSegmentsByDay(day).map((segment) => {
-                      const isActive = segment.index <= data.active_segment;
-                      const isCurrent = segment.index === data.active_segment;
-                      const solutionUnlocked = data.unlocked_solutions?.includes(segment.index);
+              {/* Grille des jours */}
+              <div className="p-6 space-y-6">
+                {daysArray.map((day) => (
+                  <div key={day}>
+                    <h3 className="text-slate-400 text-xs font-semibold uppercase tracking-wider mb-3">
+                      Jour {day}
+                    </h3>
+                    <div className="grid grid-cols-4 gap-3">
+                      {allSegments.filter(s => s.day === day).map((segment) => {
+                        const isActive = segment.index <= data.active_segment;
+                        const isCurrent = segment.index === data.active_segment;
+                        const solutionUnlocked = data.unlocked_solutions?.includes(segment.index);
 
-                      return (
-                        <div
-                          key={segment.slug}
-                          className={`
-                            relative p-4 rounded-xl border transition-all
-                            ${
-                              isCurrent
-                                ? 'bg-indigo-500/10 border-indigo-500/30'
-                                : isActive
-                                ? 'bg-white/3 border-white/10'
-                                : 'bg-white/1 border-white/5 opacity-60'
-                            }
-                          `}
-                        >
-                          {/* Badge état */}
-                          <div className="flex items-center justify-between mb-3">
-                            <span className="text-xs font-bold text-slate-500">S{segment.seg}</span>
-                            {isActive ? (
-                              <Unlock className="w-3.5 h-3.5 text-emerald-400" />
-                            ) : (
-                              <Lock className="w-3.5 h-3.5 text-slate-700" />
-                            )}
-                          </div>
+                        return (
+                          <div
+                            key={segment.slug}
+                            className={`
+                              relative p-4 rounded-xl border transition-all
+                              ${
+                                isCurrent
+                                  ? 'bg-indigo-500/10 border-indigo-500/30'
+                                  : isActive
+                                  ? 'bg-white/3 border-white/10'
+                                  : 'bg-white/1 border-white/5 opacity-60'
+                              }
+                            `}
+                          >
+                            <div className="flex items-center justify-between mb-3">
+                              <span className="text-xs font-bold text-slate-500">S{segment.seg}</span>
+                              {isActive ? (
+                                <Unlock className="w-3.5 h-3.5 text-emerald-400" />
+                              ) : (
+                                <Lock className="w-3.5 h-3.5 text-slate-700" />
+                              )}
+                            </div>
 
-                          <p className="text-xs text-slate-300 leading-snug mb-4 line-clamp-2">
-                            {segment.title}
-                          </p>
+                            <p className="text-xs text-slate-300 leading-snug mb-4 line-clamp-2">
+                              {segment.title}
+                            </p>
 
-                          <div className="space-y-2">
-                            {/* Activer jusqu'à ce segment */}
-                            <form action={activateSegmentAction}>
-                              <input type="hidden" name="sessionCode" value={code} />
-                              <input type="hidden" name="segmentIndex" value={segment.index} />
-                              <button
-                                type="submit"
-                                className={`
-                                  w-full text-xs py-1.5 px-2 rounded-lg font-medium transition-all
-                                  ${
-                                    isCurrent
-                                      ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 cursor-default'
-                                      : 'bg-white/5 text-slate-400 hover:bg-indigo-500/20 hover:text-indigo-300 border border-white/5 hover:border-indigo-500/30'
-                                  }
-                                `}
-                                disabled={isCurrent}
-                              >
-                                {isCurrent ? 'En cours ✓' : `Activer jusqu'à S${segment.seg}`}
-                              </button>
-                            </form>
-
-                            {/* Toggle corrigé */}
-                            {isActive && (
-                              <form action={toggleSolutionAction}>
+                            <div className="space-y-2">
+                              {/* Activer jusqu'à ce segment */}
+                              <form action={activateSegmentAction}>
                                 <input type="hidden" name="sessionCode" value={code} />
                                 <input type="hidden" name="segmentIndex" value={segment.index} />
                                 <button
                                   type="submit"
                                   className={`
-                                    w-full text-xs py-1.5 px-2 rounded-lg font-medium transition-all border
+                                    w-full text-xs py-1.5 px-2 rounded-lg font-medium transition-all
                                     ${
-                                      solutionUnlocked
-                                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20'
-                                        : 'bg-white/3 text-slate-500 border-white/5 hover:bg-amber-500/10 hover:text-amber-400 hover:border-amber-500/20'
+                                      isCurrent
+                                        ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 cursor-default'
+                                        : 'bg-white/5 text-slate-400 hover:bg-indigo-500/20 hover:text-indigo-300 border border-white/5 hover:border-indigo-500/30'
                                     }
                                   `}
+                                  disabled={isCurrent}
                                 >
-                                  {solutionUnlocked ? '🔓 Masquer corrigé' : '🔒 Révéler corrigé'}
+                                  {isCurrent ? 'En cours ✓' : `Activer jusqu'à S${segment.seg}`}
                                 </button>
                               </form>
-                            )}
+
+                              {/* Toggle corrigé */}
+                              {isActive && (
+                                <form action={toggleSolutionAction}>
+                                  <input type="hidden" name="sessionCode" value={code} />
+                                  <input type="hidden" name="segmentIndex" value={segment.index} />
+                                  <button
+                                    type="submit"
+                                    className={`
+                                      w-full text-xs py-1.5 px-2 rounded-lg font-medium transition-all border
+                                      ${
+                                        solutionUnlocked
+                                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20'
+                                          : 'bg-white/3 text-slate-500 border-white/5 hover:bg-amber-500/10 hover:text-amber-400 hover:border-amber-500/20'
+                                      }
+                                    `}
+                                  >
+                                    {solutionUnlocked ? '🔓 Masquer corrigé' : '🔒 Révéler corrigé'}
+                                  </button>
+                                </form>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
