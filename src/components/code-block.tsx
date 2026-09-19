@@ -73,7 +73,7 @@ export function CodeBlockWrapper({
 
 
   return (
-    <div className="group relative my-6 rounded-xl overflow-hidden border border-white/5 shadow-xl">
+    <div className="group relative my-6 rounded-xl overflow-hidden border border-white/5 shadow-xl not-prose">
       {/* Barre supérieure */}
       <div className="flex items-center justify-between px-4 py-2.5 bg-slate-900 border-b border-white/5">
         <div className="flex items-center gap-2">
@@ -93,9 +93,9 @@ export function CodeBlockWrapper({
       {/* Code */}
       <pre
         {...props}
-        className="overflow-x-auto p-4 bg-slate-950 text-xs sm:text-sm leading-relaxed whitespace-pre scroll-smooth"
+        className="overflow-x-auto p-4 bg-slate-950 text-sm leading-6 whitespace-pre scroll-smooth"
         style={{ 
-          fontFamily: '"JetBrains Mono", "Fira Code", monospace',
+          fontFamily: '"JetBrains Mono", "Fira Code", Consolas, monospace',
           WebkitOverflowScrolling: 'touch' 
         }}
       >
