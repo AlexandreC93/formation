@@ -1,0 +1,102 @@
+---
+title: Durcissement SELinux & AppArmor
+---
+
+# Durcissement SELinux & AppArmor
+
+## SELinux — Security-Enhanced Linux
+
+SELinux implémente le **Mandatory Access Control (MAC)** : les accès sont définis par des politiques centrales, indépendamment des permissions UNIX classiques.
+
+```bash
+# État SELinux
+getenforce           # Enforcing / Permissive / Disabled
+setenforce 1         # Activer l'application (Enforcing)
+setenforce 0         # Mode permissif (log sans bloquer)
+
+# Mode persistant
+cat /etc/selinux/config
+
+# Contextes SELinux
+ls -lZ /var/www/html/
+ps auxZ | grep nginx
+id -Z  # Contexte de l'utilisateur courant
+
+# Modifier le contexte d'un fichier
+chcon -t httpd_sys_content_t /var/www/html/mon-fichier.html
+semanage fcontext -a -t httpd_sys_content_t '/opt/webapp(/.*)?'
+restorecon -Rv /opt/webapp/
+```
+
+## Gestion des booléens SELinux
+
+```bash
+# Lister les booléens
+getsebool -a | grep httpd
+
+# Activer un booléen (persistant)
+setsebool -P httpd_can_network_connect on
+setsebool -P httpd_can_sendmail on
+setsebool -P httpd_enable_homedirs on
+```
+
+## Analyse des refus SELinux
+
+```bash
+# Voir les refus (AVC = Access Vector Cache)
+audit2why < /var/log/audit/audit.log | tail -30
+audit2allow < /var/log/audit/audit.log
+
+# Recherche spécifique
+ausearch -m avc -ts today
+ausearch -m avc -c nginx --ts today
+
+# Générer un module de politique depuis les refus
+audit2allow -M mon-nginx < /var/log/audit/audit.log
+semodule -i mon-nginx.pp
+
+# Troubleshoot
+sealert -a /var/log/audit/audit.log
+```
+
+## AppArmor — Ubuntu/Debian
+
+```bash
+# État AppArmor
+apparmor_status
+aa-status
+
+# Profils disponibles
+ls /etc/apparmor.d/
+
+# Charger / décharger un profil
+apparmor_parser -r /etc/apparmor.d/usr.sbin.nginx
+aa-enforce /etc/apparmor.d/usr.sbin.nginx
+aa-complain /etc/apparmor.d/usr.sbin.nginx  # Mode log sans bloquer
+
+# Exemple de profil AppArmor pour nginx
+cat > /etc/apparmor.d/usr.sbin.nginx << 'EOF'
+#include <tunables/global>
+
+/usr/sbin/nginx flags=(attach_disconnected) {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+
+  capability net_bind_service,
+  capability setuid,
+  capability setgid,
+
+  /usr/sbin/nginx mr,
+  /etc/nginx/** r,
+  /var/log/nginx/** rw,
+  /var/www/html/** r,
+  /run/nginx.pid rw,
+
+  deny /etc/passwd r,
+  deny /etc/shadow r,
+}
+EOF
+
+apparmor_parser -r /etc/apparmor.d/usr.sbin.nginx
+aa-status | grep nginx
+```

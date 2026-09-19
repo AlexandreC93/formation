@@ -1,0 +1,93 @@
+---
+title: Politiques de Sécurité CIS Benchmark
+---
+
+# Politiques de Sécurité CIS Benchmark
+
+## Qu'est-ce que le CIS Benchmark ?
+
+Le **Center for Internet Security (CIS)** publie des guides de configuration de sécurité pour Linux, Windows, Docker, Kubernetes, etc.
+
+- **Niveau 1** : Configurations de base, impact minimal sur les performances
+- **Niveau 2** : Configurations avancées pour environnements haute sécurité
+
+## Contrôles CIS essentiels pour Linux
+
+```bash
+# 1. Désactiver les systèmes de fichiers dangereux
+cat >> /etc/modprobe.d/cis-hardening.conf << 'EOF'
+install cramfs /bin/true
+install freevxfs /bin/true
+install jffs2 /bin/true
+install hfs /bin/true
+install hfsplus /bin/true
+install squashfs /bin/true
+install udf /bin/true
+EOF
+
+# 2. Options de montage sécurisées dans /etc/fstab
+tmpfs /tmp tmpfs defaults,rw,nosuid,nodev,noexec,relatime 0 0
+
+# 3. Core dumps désactivés
+cat >> /etc/security/limits.d/cis.conf << 'EOF'
+* hard core 0
+EOF
+echo 'fs.suid_dumpable = 0' >> /etc/sysctl.d/cis.conf
+sysctl -p /etc/sysctl.d/cis.conf
+
+# 4. ASLR
+echo 'kernel.randomize_va_space = 2' >> /etc/sysctl.d/cis.conf
+
+# 5. Paramètres réseau CIS
+cat >> /etc/sysctl.d/cis-network.conf << 'EOF'
+net.ipv4.ip_forward = 0
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.tcp_syncookies = 1
+net.ipv4.conf.all.log_martians = 1
+EOF
+sysctl -p /etc/sysctl.d/cis-network.conf
+```
+
+## Audit avec Lynis
+
+```bash
+# Installation
+apt install lynis -y
+
+# Audit système complet
+lynis audit system
+
+# Rapport détaillé
+cat /var/log/lynis-report.dat | grep -E 'warning|suggestion' | head -30
+
+# Comparer les scores
+lynis audit system --no-colors | grep 'Hardening index'
+```
+
+## Script de durcissement automatique
+
+```bash
+#!/bin/bash
+# harden-cis.sh - Durcissement CIS Benchmark niveau 1
+
+set -euo pipefail
+LOG=/var/log/hardening-$(date +%Y%m%d).log
+echo "Début du durcissement : $(date)" | tee $LOG
+
+# Bannir les modules inutiles
+for mod in cramfs freevxfs jffs2 hfs hfsplus udf; do
+    echo "install $mod /bin/true" >> /etc/modprobe.d/cis.conf
+    echo "Module $mod désactivé" | tee -a $LOG
+done
+
+# sysctl
+sysctl -w kernel.randomize_va_space=2
+sysctl -w net.ipv4.tcp_syncookies=1
+sysctl -w net.ipv4.conf.all.rp_filter=1
+sysctl -p
+
+echo "Durcissement terminé : $(date)" | tee -a $LOG
+```

@@ -1,0 +1,133 @@
+---
+title: Corrigé — Supervision et gestion des services
+---
+
+# Corrigé — Supervision et gestion des services
+
+## Exercice 1
+
+```bash
+# 1. Top 5 processus par mémoire RSS
+ps aux --sort=-%mem --no-headers | head -5 | \
+  awk '{printf "PID:%-8s User:%-12s RSS:%.1fMo  %s\n", $2, $1, $6/1024, $11}'
+
+# 2. Processus zombies
+ps aux | awk '$8=="Z" {print $2, $11, "[ZOMBIE]"}'
+# Ou :
+ps -A -ostat,pid,comm | grep -e '^[Zz]'
+
+# 3. Processus en LISTEN (TCP)
+ss -tlnp
+# Ou :
+ss -tlnp | awk 'NR>1 {print $4, $6}'
+```
+
+## Exercice 2 — Service systemd
+
+```bash
+# /opt/healthcheck.sh
+cat > /opt/healthcheck.sh << 'SCRIPT'
+#!/bin/bash
+TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+if curl -sf --max-time 5 http://127.0.0.1:80/ > /dev/null 2>&1; then
+    echo "$TIMESTAMP OK" >> /var/log/healthcheck.log
+    echo "Port 80 accessible" | systemd-cat -t HEALTHCHECK -p info
+else
+    echo "$TIMESTAMP FAIL" >> /var/log/healthcheck.log
+    echo "Port 80 inaccessible !" | systemd-cat -t HEALTHCHECK -p err
+    exit 1
+fi
+SCRIPT
+chmod +x /opt/healthcheck.sh
+
+# /etc/systemd/system/healthcheck.service
+cat > /etc/systemd/system/healthcheck.service << 'EOF'
+[Unit]
+Description=Application Health Check
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/healthcheck.sh
+Restart=on-failure
+RestartSec=10
+SyslogIdentifier=HEALTHCHECK
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable healthcheck.service
+systemctl start healthcheck.service
+systemctl status healthcheck.service
+```
+
+## Exercice 3 — Timer systemd
+
+```bash
+# /opt/mem-alert.sh
+cat > /opt/mem-alert.sh << 'SCRIPT'
+#!/bin/bash
+TOTAL=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+AVAIL=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
+PCT=$(( AVAIL * 100 / TOTAL ))
+if [ $PCT -lt 10 ]; then
+    echo "ALERTE : Mémoire disponible = ${PCT}% (${AVAIL}kB / ${TOTAL}kB)" >&2
+    logger -t MEM_ALERT -p user.warning "Mémoire critique : ${PCT}%"
+fi
+SCRIPT
+chmod +x /opt/mem-alert.sh
+
+# Timer systemd
+cat > /etc/systemd/system/mem-alert.service << 'EOF'
+[Unit]
+Description=Memory Alert Monitor
+
+[Service]
+Type=oneshot
+ExecStart=/opt/mem-alert.sh
+EOF
+
+cat > /etc/systemd/system/mem-alert.timer << 'EOF'
+[Unit]
+Description=Run memory alert every 5 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+systemctl enable mem-alert.timer
+systemctl start mem-alert.timer
+systemctl list-timers mem-alert.timer
+```
+
+## Exercice 4 — Analyse logs
+
+```bash
+# 1. Erreurs dans les 24 dernières heures
+journalctl -p err --since "24 hours ago" | wc -l
+
+# 2. Service avec le plus d'erreurs
+journalctl -p err --since "24 hours ago" -o json | \
+  python3 -c "
+import json,sys
+from collections import Counter
+c=Counter()
+for line in sys.stdin:
+    try: c[json.loads(line).get('_SYSTEMD_UNIT','unknown')] += 1
+    except: pass
+for k,v in c.most_common(5): print(f'{v:6d}  {k}')
+"
+
+# 3. Logs du boot actuel en JSON
+journalctl -b 0 -o json > /tmp/boot-logs.json
+wc -l /tmp/boot-logs.json
+```

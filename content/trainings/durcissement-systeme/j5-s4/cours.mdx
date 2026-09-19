@@ -1,0 +1,90 @@
+---
+title: Réponse à Incident & Forensique Linux
+---
+
+# Réponse à Incident & Forensique Linux
+
+## Méthodologie PICERL
+
+| Phase | Actions |
+|---|---|
+| **P**réparation | Plans, outils, sauvegardes, playbooks |
+| **I**dentification | Détection, classification, alerte |
+| **C**onfinement | Isolation réseau, snapshot, preservation |
+| **É**radication | Suppression de la cause racine |
+| **R**estauration | Retour en production contrôlé |
+| **L**eçons | Post-mortem, améliorations |
+
+## Triage initial d'incident
+
+```bash
+#!/bin/bash
+# triage.sh - Collecte forensique rapide
+DATE=$(date +%Y%m%d_%H%M%S)
+OUTPUT="/tmp/triage_$DATE"
+mkdir -p $OUTPUT
+
+echo "=== Démarrage triage : $(date)" | tee $OUTPUT/triage.log
+
+# Informations système
+uname -a > $OUTPUT/system.txt
+cat /etc/os-release >> $OUTPUT/system.txt
+uptime >> $OUTPUT/system.txt
+
+# Processus
+ps auxef > $OUTPUT/processes.txt
+pstree -p >> $OUTPUT/processes.txt
+
+# Réseau
+ss -tulnap > $OUTPUT/network_listening.txt
+ss -tnap > $OUTPUT/network_connected.txt
+ip addr > $OUTPUT/network_interfaces.txt
+arp -n > $OUTPUT/arp_table.txt
+
+# Utilisateurs
+who > $OUTPUT/logged_users.txt
+last -20 >> $OUTPUT/logged_users.txt
+cat /etc/passwd | grep -v 'nologin\|false' > $OUTPUT/shell_users.txt
+
+# Fichiers suspects
+find /tmp /var/tmp /dev/shm -type f 2>/dev/null > $OUTPUT/tmp_files.txt
+find / -mtime -1 -type f 2>/dev/null | grep -v '/proc\|/sys' > $OUTPUT/recently_modified.txt
+find / -perm -4000 -type f 2>/dev/null > $OUTPUT/suid_files.txt
+
+# Logs récents
+tail -200 /var/log/auth.log > $OUTPUT/auth_recent.txt 2>/dev/null
+journalctl -n 500 --no-pager > $OUTPUT/journal_recent.txt 2>/dev/null
+
+# Persistance
+crontab -l 2>/dev/null > $OUTPUT/root_cron.txt
+cat /etc/crontab >> $OUTPUT/root_cron.txt
+systemctl list-units --state=failed > $OUTPUT/failed_units.txt
+
+tar czf /tmp/triage_$DATE.tar.gz -C /tmp triage_$DATE/
+sha256sum /tmp/triage_$DATE.tar.gz > /tmp/triage_$DATE.sha256
+echo "Triage complet : /tmp/triage_$DATE.tar.gz"
+```
+
+## Analyse des artefacts
+
+```bash
+# Historique bash
+cat ~/.bash_history
+cat /home/*/.bash_history 2>/dev/null
+
+# Logs SSH
+grep 'Accepted\|Failed' /var/log/auth.log | tail -50
+
+# Crontabs suspects
+for f in /var/spool/cron/crontabs/*; do
+  echo "=== $f ==="
+  cat "$f"
+done
+
+# Connexions réseau persistantes
+ss -tnap | awk 'NR>1 && $1=="ESTAB" {print}'
+
+# Fichiers modifiés récemment
+find / -newer /var/log/auth.log -type f 2>/dev/null | \
+  grep -v '/proc\|/sys\|/dev' | head -20
+```

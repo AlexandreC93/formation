@@ -1,0 +1,75 @@
+---
+title: Corrigé — Diagnostic et analyse réseau
+---
+
+# Corrigé — Diagnostic et analyse réseau
+
+## Exercice 1
+
+```bash
+# Configuration réseau complète
+echo "=== INTERFACES ==="
+ip -o addr show | awk '{print $2, $4}'
+echo "=== ROUTES ==="
+ip route show
+echo "=== DNS ==="
+cat /etc/resolv.conf
+
+# Ports en écoute avec process
+ss -tulnp | awk 'NR==1 || /LISTEN/'
+
+# Connexions TCP par application
+ss -tnp state established | awk 'NR>1 {print $NF}' | \
+  grep -oP 'users:\(\("\K[^"]+' | sort | uniq -c | sort -rn
+```
+
+## Exercice 2
+
+```bash
+# Enregistrements DNS
+dig mail.example.com A +short
+dig example.com MX +short
+dig example.com TXT +short
+dig example.com TXT +short | grep spf
+
+# Résolution inverse
+MY_IP=$(curl -s ifconfig.me)
+dig -x $MY_IP +short
+
+# Serveur autoritaire
+dig example.com NS +short
+dig @$(dig example.com NS +short | head -1) example.com SOA +short
+```
+
+## Exercice 3
+
+```bash
+# Capture 60s sur port 443
+INTERFACE=$(ip route | grep default | awk '{print $5}' | head -1)
+tcpdump -i $INTERFACE 'tcp port 443' -w /tmp/tls-capture.pcap &
+TCPDUMP_PID=$!
+sleep 60
+kill $TCPDUMP_PID
+
+# Top 5 IPs distantes
+tcpdump -r /tmp/tls-capture.pcap -nn 'tcp port 443' 2>/dev/null | \
+  grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort | uniq -c | sort -rn | head -5
+
+# Connexions RST
+tcpdump -r /tmp/tls-capture.pcap -nn 'tcp[tcpflags] & tcp-rst != 0' 2>/dev/null | head -20
+```
+
+## Exercice 4
+
+```bash
+# Sous-réseau local
+NET=$(ip route | grep 'src' | grep -v default | head -1 | awk '{print $1}')
+nmap -sn $NET -oG - | grep "Up" | awk '{print $2}'
+
+# 20 premiers ports des hôtes trouvés
+nmap -sn $NET -oG - | grep "Up" | awk '{print $2}' | \
+  xargs -I{} nmap -F {} --open 2>/dev/null
+
+# Version SSH
+nmap -sV -p 22 127.0.0.1
+```

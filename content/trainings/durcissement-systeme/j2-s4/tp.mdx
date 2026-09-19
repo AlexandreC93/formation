@@ -1,0 +1,39 @@
+---
+title: TP — Détection d'intrusion
+---
+
+# TP — Détection d'intrusion et analyse de trafic
+
+## Objectifs
+- Détecter des comportements anormaux dans le trafic réseau
+- Configurer Suricata en mode IDS
+- Analyser des logs d'authentification
+
+## Durée estimée : 45 minutes
+
+## Exercice 1 — Analyse d'une capture réseau
+
+1. Capturez 5 minutes de trafic sur votre interface principale
+2. Identifiez les 10 couples source:destination les plus actifs
+3. Détectez les tentatives de connexion port 22 échouées dans la capture
+4. Exportez les statistiques DNS (toutes les requêtes DNS observées)
+
+## Exercice 2 — Suricata IDS
+
+1. Installez et configurez Suricata sur votre interface réseau
+2. Mettez à jour les règles Emerging Threats
+3. Écrivez une règle Suricata personnalisée qui détecte les scans nmap (User-Agent "Nmap")
+4. Testez votre règle et vérifiez l'alerte dans `eve.json`
+
+## Exercice 3 — Analyse des logs d'auth
+
+1. Listez les 10 IPs avec le plus de tentatives d'échec SSH des 7 derniers jours
+2. Y a-t-il des connexions SSH en dehors des heures ouvrables (avant 8h ou après 19h) ?
+3. Générez un rapport HTML des activités d'authentification avec `logwatch` ou un script maison
+
+## Exercice 4 — Règle de détection personnalisée
+
+Créez une règle Suricata qui :
+- Détecte les requêtes HTTP vers des URLs contenant `/etc/passwd` (tentative LFI)
+- Alerte si une connexion ICMP depasse 100 paquets par minute vers une même cible
+- Détecte les connexions SSH vers des ports non standards (hors 22)

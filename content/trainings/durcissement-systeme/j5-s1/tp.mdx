@@ -1,0 +1,45 @@
+---
+title: TP — Sécurisation Docker
+---
+
+# TP — Sécurisation des conteneurs Docker
+
+## Objectifs
+- Appliquer les bonnes pratiques de sécurité Docker
+- Scanner des images pour les vulnérabilités
+- Configurer un runtime sécurisé
+
+## Durée estimée : 45 minutes
+
+## Exercice 1 — Audit d'images existantes
+
+1. Tirez les images `nginx:latest` et `node:18`
+2. Inspectez les utilisateurs qui exécutent le processus principal
+3. Listez les capabilities accordées par défaut
+4. Scannez avec Trivy et identifiez les CVE critiques
+
+## Exercice 2 — Dockerfile sécurisé
+
+Créez un Dockerfile pour une API Python Flask qui :
+1. Utilise `python:3.12-slim-bookworm` comme base
+2. Tourne en tant qu'utilisateur non-root `appuser` (UID 1000)
+3. N'inclut pas les outils de développement (multi-stage)
+4. Passe les vérifications Trivy (zéro CRITICAL)
+
+## Exercice 3 — Runtime hardening
+
+1. Lancez un conteneur nginx avec :
+   - Toutes les capabilities retirées sauf `NET_BIND_SERVICE`
+   - Filesystem en lecture seule + tmpfs pour `/tmp`
+   - Limite de mémoire 128 Mo
+   - `no-new-privileges`
+2. Vérifiez que nginx fonctionne malgré ces restrictions
+3. Tentez d'exécuter une commande en root dans le conteneur
+
+## Exercice 4 — Docker Compose sécurisé
+
+Créez un `docker-compose.yml` pour une stack nginx + app Python avec :
+- Réseau isolé entre les conteneurs
+- Bind sur localhost uniquement
+- Ressources limitées
+- Healthchecks configurés

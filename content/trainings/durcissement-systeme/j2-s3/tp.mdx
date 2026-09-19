@@ -1,0 +1,38 @@
+---
+title: TP — Déploiement WireGuard
+---
+
+# TP — Déploiement WireGuard VPN
+
+## Objectifs
+- Déployer un serveur WireGuard fonctionnel
+- Gérer les clés et les pairs
+- Vérifier le chiffrement du tunnel
+
+## Durée estimée : 45 minutes
+
+## Exercice 1 — Serveur WireGuard
+
+1. Installez et configurez WireGuard sur votre machine
+2. Créez l'interface `wg0` avec l'adresse `172.16.0.1/24` sur le port UDP 51820
+3. Générez une paire de clés et stockez-les sécurisément (permissions 600)
+4. Activez le routage IP et le masquerade NAT pour les clients VPN
+
+## Exercice 2 — Ajout de pairs
+
+1. Générez des clés pour 3 clients `wg-client01`, `wg-client02`, `wg-client03`
+2. Assignez-leur les IPs `172.16.0.11`, `172.16.0.12`, `172.16.0.13`
+3. Ajoutez-les comme pairs dans la configuration serveur
+4. Générez les fichiers de configuration client complets
+
+## Exercice 3 — Vérification
+
+1. Vérifiez l'état du tunnel avec `wg show`
+2. Testez la connectivité entre les pairs
+3. Capturez le trafic WireGuard et vérifiez qu'il est bien chiffré (UDP opaque)
+
+## Exercice 4 — Tunnel SSH
+
+1. Créez un tunnel SSH local qui expose le port 5432 d'une machine interne sur votre localhost
+2. Rendez le tunnel persistant avec `autossh` et un service systemd
+3. Vérifiez la sécurité du tunnel (algorithmes utilisés)

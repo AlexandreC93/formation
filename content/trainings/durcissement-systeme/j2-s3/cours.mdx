@@ -1,0 +1,114 @@
+---
+title: VPN & Tunnels Chiffrés
+---
+
+# VPN & Tunnels Chiffrés (OpenVPN / WireGuard)
+
+## Comparatif OpenVPN vs WireGuard
+
+| Critère | OpenVPN | WireGuard |
+|---|---|---|
+| Protocole | SSL/TLS (TCP ou UDP) | UDP uniquement |
+| Code | ~600 000 lignes | ~4 000 lignes |
+| Performances | Modérées | Très élevées |
+| Cryptographie | Configurable (RSA, EC) | Curve25519, ChaCha20 |
+| Noyau Linux | Userspace | Module noyau |
+| Configuration | Complexe (PKI) | Simple (clés publiques) |
+
+## WireGuard — Configuration
+
+```bash
+# Installation
+apt install wireguard -y
+
+# Génération des clés (serveur)
+cd /etc/wireguard
+umask 077
+wg genkey | tee server_private.key | wg pubkey > server_public.key
+
+# Génération des clés (client)
+wg genkey | tee client_private.key | wg pubkey > client_public.key
+
+# Configuration serveur /etc/wireguard/wg0.conf
+cat > /etc/wireguard/wg0.conf << EOF
+[Interface]
+PrivateKey = $(cat server_private.key)
+Address = 10.8.0.1/24
+ListenPort = 51820
+SaveConfig = true
+
+# Activer le routage
+PostUp   = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+
+[Peer]
+# Client 01
+PublicKey = $(cat client_public.key)
+AllowedIPs = 10.8.0.2/32
+EOF
+
+# Démarrage
+systemctl enable wg-quick@wg0
+systemctl start wg-quick@wg0
+wg show
+```
+
+## Configuration client WireGuard
+
+```ini
+# /etc/wireguard/wg0.conf (client)
+[Interface]
+PrivateKey = <CLE_PRIVEE_CLIENT>
+Address = 10.8.0.2/24
+DNS = 10.8.0.1
+
+[Peer]
+PublicKey = <CLE_PUBLIQUE_SERVEUR>
+Endpoint = vpn.example.com:51820
+AllowedIPs = 0.0.0.0/0   # Tunnel complet (all traffic)
+# AllowedIPs = 10.0.0.0/8  # Split tunnel
+PersistentKeepalive = 25
+```
+
+## Tunnel SSH (port forwarding)
+
+```bash
+# Tunnel local (accèder à un service distant via SSH)
+# localhost:8080 -> serveur:80 (via bastion)
+ssh -L 8080:service-interne:80 user@bastion -N -f
+
+# Tunnel distant (exposer un service local via SSH)
+# bastion:9090 -> localhost:3000
+ssh -R 9090:localhost:3000 user@bastion -N -f
+
+# Tunnel dynamique (proxy SOCKS)
+ssh -D 1080 user@bastion -N -f
+# Utiliser avec : curl --socks5 localhost:1080 http://intranet
+
+# Tunnel persistant avec autossh
+autossh -M 20000 -f -N \
+  -L 5432:db-interne:5432 \
+  -o ServerAliveInterval=30 \
+  user@bastion
+```
+
+## OpenVPN — Configuration PKI minimale
+
+```bash
+# Infrastructure de clés avec easy-rsa
+apt install openvpn easy-rsa -y
+make-cadir /etc/openvpn/easy-rsa
+cd /etc/openvpn/easy-rsa
+
+# Initialiser la PKI
+./easyrsa init-pki
+./easyrsa build-ca nopass          # CA sans mot de passe
+./easyrsa gen-req server nopass    # Clé serveur
+./easyrsa sign-req server server   # Signer
+./easyrsa gen-dh                   # Diffie-Hellman
+./easyrsa gen-req client01 nopass  # Clé client
+./easyrsa sign-req client client01 # Signer le client
+
+# Paramètres TLS supplémentaires
+openvpn --genkey tls-auth ta.key
+```

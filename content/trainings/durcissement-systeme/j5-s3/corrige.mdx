@@ -1,0 +1,117 @@
+---
+title: Corrigé — CI/CD sécurisé
+---
+
+# Corrigé — CI/CD sécurisé
+
+## Exercice 1 — Bandit
+
+```bash
+pip install bandit
+
+cat > /tmp/vuln_app.py << 'PY'
+import subprocess, hashlib, random
+
+def run_cmd(cmd):
+    return subprocess.call(cmd, shell=True)  # B603
+
+def hash_password(pwd):
+    return hashlib.md5(pwd.encode()).hexdigest()  # B303
+
+def generate_token():
+    return str(random.randint(1000, 9999))  # B311
+PY
+
+bandit /tmp/vuln_app.py
+
+# Corrections :
+cat > /tmp/vuln_app_fixed.py << 'PY'
+import subprocess, hashlib, secrets
+
+def run_cmd(cmd):
+    return subprocess.run(cmd.split(), check=True)  # Plus de shell=True
+
+def hash_password(pwd):
+    return hashlib.sha256(pwd.encode()).hexdigest()  # SHA-256
+
+def generate_token():
+    return secrets.token_hex(16)  # Cryptographiquement sûr
+PY
+
+bandit /tmp/vuln_app_fixed.py
+```
+
+## Exercice 2 — Makefile
+
+```makefile
+IMAGE ?= myapp
+TAG ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo latest)
+REGISTRY ?= registry.example.com
+
+.PHONY: all lint test build scan push
+
+all: lint test build scan
+
+lint:
+	@echo "=== Lint ==="
+	python3 -m flake8 src/ --max-line-length=120 2>/dev/null || echo "flake8 not installed, skipping"
+	bandit -r src/ -ll 2>/dev/null || echo "bandit not installed, skipping"
+
+test:
+	@echo "=== Tests ==="
+	python3 -m pytest tests/ -v --tb=short 2>/dev/null || echo "No tests found"
+
+build:
+	@echo "=== Build ==="
+	docker build -t $(IMAGE):$(TAG) .
+
+scan:
+	@echo "=== Scan Trivy ==="
+	trivy image --exit-code 1 --severity CRITICAL $(IMAGE):$(TAG)
+
+push: scan
+	@echo "=== Push (scan OK) ==="
+	docker tag $(IMAGE):$(TAG) $(REGISTRY)/$(IMAGE):$(TAG)
+	docker push $(REGISTRY)/$(IMAGE):$(TAG)
+```
+
+## Exercice 3 — Secrets
+
+```bash
+# Installation gitleaks
+wget -q https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_linux_x64.tar.gz \
+  -O - | tar xz -C /usr/local/bin/ gitleaks 2>/dev/null
+
+gitleaks detect --source . --report-path /tmp/leaks.json
+
+# Pre-commit hook
+cat > .git/hooks/pre-commit << 'HOOK'
+#!/bin/bash
+gitleaks protect --staged --redact
+if [ $? -ne 0 ]; then
+  echo "Secrets détectés ! Commit refusé."
+  exit 1
+fi
+HOOK
+chmod +x .git/hooks/pre-commit
+```
+
+## Exercice 4 — Cosign
+
+```bash
+curl -sL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 \
+  -o /usr/local/bin/cosign
+chmod +x /usr/local/bin/cosign
+
+cosign generate-key-pair
+
+docker build -t localhost/myapp:v1.0 .
+cosign sign --key cosign.key localhost/myapp:v1.0
+
+# Vérification (OK)
+cosign verify --key cosign.pub localhost/myapp:v1.0
+
+# Image non signée (échoue)
+cosign verify --key cosign.pub nginx:latest
+# Error: no signatures found
+```

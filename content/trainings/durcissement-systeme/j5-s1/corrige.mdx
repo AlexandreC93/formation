@@ -1,0 +1,117 @@
+---
+title: Corrigé — Sécurisation Docker
+---
+
+# Corrigé — Sécurisation des conteneurs Docker
+
+## Exercice 1
+
+```bash
+docker pull nginx:latest node:18
+
+# Utilisateur du processus principal
+docker run --rm nginx:latest id
+docker inspect nginx:latest | jq '.[0].Config.User'
+
+# Scan Trivy
+trivy image nginx:latest --severity CRITICAL
+trivy image node:18 --severity CRITICAL
+```
+
+## Exercice 2 — Dockerfile multi-stage
+
+```dockerfile
+FROM python:3.12-slim-bookworm AS builder
+WORKDIR /build
+COPY requirements.txt .
+RUN pip install --user --no-cache-dir -r requirements.txt
+
+FROM python:3.12-slim-bookworm
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r appgroup && useradd -r -g appgroup -u 1000 appuser
+WORKDIR /app
+COPY --from=builder /root/.local /home/appuser/.local
+COPY --chown=appuser:appgroup . .
+ENV PATH=/home/appuser/.local/bin:$PATH
+USER 1000
+EXPOSE 5000
+HEALTHCHECK --interval=30s CMD curl -f http://localhost:5000/ || exit 1
+CMD ["python", "-m", "flask", "run", "--host=0.0.0.0"]
+```
+
+```bash
+docker build -t flask-api:secure .
+trivy image flask-api:secure --severity CRITICAL
+```
+
+## Exercice 3
+
+```bash
+docker run -d \
+  --name nginx-hardened \
+  --cap-drop ALL \
+  --cap-add NET_BIND_SERVICE \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=32m \
+  --tmpfs /var/run:rw,noexec,nosuid,size=4m \
+  --tmpfs /var/cache/nginx:rw,noexec,nosuid \
+  --memory 128m \
+  --memory-swap 128m \
+  --security-opt no-new-privileges \
+  -p 127.0.0.1:8080:80 \
+  nginx:alpine
+
+curl http://127.0.0.1:8080/
+
+# Tentative root
+docker exec nginx-hardened id
+docker exec nginx-hardened chmod 777 /etc/passwd  # Doit échouer (read-only)
+```
+
+## Exercice 4
+
+```yaml
+version: '3.8'
+
+networks:
+  frontend:
+  backend:
+    internal: true
+
+services:
+  nginx:
+    image: nginx:alpine
+    networks: [frontend, backend]
+    ports:
+      - "127.0.0.1:8080:80"
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=32m
+      - /var/cache/nginx:noexec,nosuid
+      - /var/run:noexec,nosuid
+    security_opt: [no-new-privileges:true]
+    deploy:
+      resources:
+        limits: {cpus: '0.5', memory: 128M}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  app:
+    build: .
+    networks: [backend]
+    user: "1000:1000"
+    read_only: true
+    tmpfs: [/tmp:noexec,nosuid]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: {cpus: '1.0', memory: 512M}
+```

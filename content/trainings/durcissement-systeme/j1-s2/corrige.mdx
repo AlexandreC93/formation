@@ -1,0 +1,113 @@
+---
+title: Corrigé — Sécurisation des accès utilisateurs
+---
+
+# Corrigé — Sécurisation des accès utilisateurs
+
+## Exercice 1 — Création de comptes métier
+
+```bash
+#!/bin/bash
+# Créer les groupes
+groupadd -f ops
+groupadd -f deploy
+groupadd -f audit
+groupadd -f docker
+
+# ops-admin
+useradd -m -s /bin/bash -g ops -G sudo,docker -c "Ops Admin" ops-admin
+
+# svc-nginx (compte de service, pas de shell)
+useradd -r -s /sbin/nologin -g www-data -c "NGINX Service" svc-nginx
+
+# deployer
+useradd -m -s /bin/bash -g deploy -G docker -c "Deployer" deployer
+# Forcer l'authentification par clé SSH (dans sshd_config) :
+# Match User deployer
+#   PasswordAuthentication no
+
+# auditor (shell restreint)
+useradd -m -s /bin/rbash -g audit -c "Auditor" auditor
+```
+
+## Exercice 2 — Permissions sur répertoire applicatif
+
+```bash
+#!/bin/bash
+# Structure
+mkdir -p /opt/webapp/{conf,logs,uploads}
+
+# Propriétaire général
+chown -R root:root /opt/webapp
+chmod 751 /opt/webapp
+
+# conf/ : ops-admin rw, svc-nginx r, deployer rw, autres rien
+chmod 750 /opt/webapp/conf
+chown root:ops /opt/webapp/conf
+setfacl -m u:svc-nginx:r-x /opt/webapp/conf
+setfacl -m u:deployer:rwx /opt/webapp/conf
+setfacl -d -m u:svc-nginx:r-x /opt/webapp/conf
+setfacl -d -m u:deployer:rwx /opt/webapp/conf
+
+# logs/ : ops-admin rw, svc-nginx rw, deployer rien
+chmod 750 /opt/webapp/logs
+chown root:ops /opt/webapp/logs
+setfacl -m u:svc-nginx:rwx /opt/webapp/logs
+setfacl -d -m u:svc-nginx:rwx /opt/webapp/logs
+
+# uploads/ : ops-admin rw, svc-nginx rw, deployer rw, sticky bit
+chmod 1750 /opt/webapp/uploads
+chown root:ops /opt/webapp/uploads
+setfacl -m u:svc-nginx:rwx /opt/webapp/uploads
+setfacl -m u:deployer:rwx /opt/webapp/uploads
+setfacl -d -m u:svc-nginx:rwx /opt/webapp/uploads
+setfacl -d -m u:deployer:rwx /opt/webapp/uploads
+
+# Vérification
+getfacl /opt/webapp/conf
+getfacl /opt/webapp/uploads
+```
+
+## Exercice 3 — Configuration sudo
+
+```bash
+# /etc/sudoers.d/webapp
+cat > /etc/sudoers.d/webapp << 'EOF'
+# Deployer : redémarrage nginx et php-fpm uniquement
+deployer ALL=(root) NOPASSWD: /usr/bin/systemctl restart nginx, \
+                               /usr/bin/systemctl reload nginx, \
+                               /usr/bin/systemctl restart php8.1-fpm, \
+                               /usr/bin/systemctl reload php8.1-fpm
+
+# Ops-admin : toutes commandes systemctl
+%ops    ALL=(root) NOPASSWD: /usr/bin/systemctl *
+
+# Auditor : lecture journaux seulement
+auditor ALL=(root) NOPASSWD: /usr/bin/journalctl
+EOF
+
+chmod 440 /etc/sudoers.d/webapp
+visudo -c  # Vérifier la syntaxe
+```
+
+## Exercice 4 — Audit des permissions
+
+```bash
+# 1. Fichiers SUID/SGID
+echo "=== SUID ==="
+find / -perm -4000 -type f 2>/dev/null | sort
+echo "=== SGID ==="
+find / -perm -2000 -type f 2>/dev/null | sort
+
+# 2. Fichiers world-writable hors /tmp et /proc
+find / -perm -0002 -type f \
+  ! -path '/tmp/*' \
+  ! -path '/proc/*' \
+  ! -path '/sys/*' \
+  2>/dev/null | sort
+
+# 3. Vérification /etc/shadow
+ls -la /etc/shadow
+# Attendu : -rw-r----- 1 root shadow
+stat /etc/shadow | grep -E 'Access|Uid|Gid'
+```

@@ -1,0 +1,89 @@
+---
+title: Audit Système & Journalisation
+---
+
+# Audit Système & Journalisation (auditd)
+
+## auditd — Le système d'audit Linux
+
+```bash
+# Installation et démarrage
+apt install auditd audispd-plugins -y
+systemctl enable auditd && systemctl start auditd
+
+# Configuration
+cat /etc/audit/auditd.conf | grep -E 'log_file|max_log|num_logs|space_left'
+
+# Lister les règles actives
+auditctl -l
+auditctl -s  # Statistiques du démon
+```
+
+## Règles d'audit
+
+```bash
+# Surveiller les fichiers sensibles
+auditctl -w /etc/passwd -p wa -k identity-changes
+auditctl -w /etc/shadow -p wa -k identity-changes
+auditctl -w /etc/sudoers -p wa -k sudoers-changes
+auditctl -w /etc/ssh/sshd_config -p wa -k ssh-config
+
+# Règles permanentes
+cat > /etc/audit/rules.d/formation.rules << 'EOF'
+-w /etc/passwd -p wa -k identity-changes
+-w /etc/shadow -p wa -k identity-changes
+-w /etc/group -p wa -k identity-changes
+-w /etc/sudoers -p wa -k sudoers-changes
+-w /etc/ssh/ -p wa -k ssh-config
+-w /root/.ssh/ -p wa -k root-ssh
+
+-a always,exit -F arch=b64 -S execve -F uid>=1000 -k user-exec
+-a always,exit -F arch=b64 -S execve -F uid=0 -k root-exec
+
+-a always,exit -F arch=b64 -S open -F exit=-EACCES -k access-denied
+-a always,exit -F arch=b64 -S open -F exit=-EPERM -k access-denied
+
+-w /etc/hosts -p wa -k hosts-changes
+-w /etc/network/ -p wa -k network-changes
+
+# Immutable
+-e 2
+EOF
+
+augenrules --load
+```
+
+## Recherche et analyse dans les logs
+
+```bash
+# Recherche par clé
+ausearch -k identity-changes
+ausearch -k sudoers-changes --ts today
+
+# Recherche par utilisateur
+ausearch -ui 1000 -ts today
+ausearch -ul username
+
+# Rapports pré-formatés
+aureport --auth
+aureport --exec
+aureport --failed
+aureport --key identity-changes
+
+# Format lisible
+auditd -l -i
+```
+
+## Centralisation des logs (rsyslog)
+
+```bash
+# Envoyer les logs vers un serveur central
+cat >> /etc/rsyslog.conf << 'EOF'
+$DefaultNetstreamDriver gtls
+$DefaultNetstreamDriverCAFile /etc/ssl/certs/ca.crt
+$ActionSendStreamDriverMode 1
+*.* @@(o)siem.example.com:6514
+EOF
+
+systemctl restart rsyslog
+```

@@ -1,0 +1,39 @@
+---
+title: TP — Chiffrement LUKS
+---
+
+# TP — Chiffrement des données au repos avec LUKS
+
+## Objectifs
+- Chiffrer une partition avec LUKS2
+- Gérer les slots de clés
+- Automatiser le montage sécurisé
+
+## Durée estimée : 45 minutes
+
+## Exercice 1 — Partition LUKS2
+
+1. Créez un fichier-conteneur de 500 Mo avec `dd` et `loop device`
+2. Initialisez-le en LUKS2 avec AES-XTS-512 bits
+3. Ouvrez-le, créez un FS ext4, montez-le
+4. Copiez des fichiers sensibles et fermez le conteneur
+5. Vérifiez que les données sont illisibles dans le fichier brut
+
+## Exercice 2 — Slots et clés de secours
+
+1. Ajoutez une clé de secours (keyfile) dans le slot 1
+2. Vérifiez que vous pouvez ouvrir le conteneur avec la clé ou le keyfile
+3. Changez le mot de passe principal (slot 0) sans perdre l'accés
+4. Révoquez le keyfile de secours
+
+## Exercice 3 — Montage automatique
+
+1. Configurez `/etc/crypttab` et `/etc/fstab` pour un montage automatique au boot
+2. Redémarrez et vérifiez que le volume est monté
+3. Configurez systemd pour monter le volume uniquement si le keyfile est présent
+
+## Exercice 4 — Sauvegarde et récupération
+
+1. Sauvegardez l'en-tête LUKS dans un endroit sécurisé
+2. Simulez une corruption de l'en-tête et récupérez depuis la sauvegarde
+3. Expliquez la politique de sauvegarde des clés LUKS en environnement gouvernemental

@@ -1,0 +1,117 @@
+---
+title: PKI & Gestion des Certificats X.509
+---
+
+# PKI & Gestion des Certificats X.509
+
+## Structure d'une PKI
+
+```
+Root CA (hors ligne)
+    └── Intermediate CA
+            ├── Certificats serveurs (TLS)
+            ├── Certificats clients (auth mutuelle)
+            └── Certificats signature de code
+```
+
+## Créer une CA avec OpenSSL
+
+```bash
+# Structure
+mkdir -p /opt/pki/{ca,intermediate,certs,crl}
+cd /opt/pki
+
+# CA racine
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 \
+  -out ca/ca.key
+chmod 400 ca/ca.key
+
+openssl req -new -x509 -days 3650 -key ca/ca.key \
+  -out ca/ca.crt \
+  -subj "/C=FR/ST=IDF/O=Formation/CN=Formation Root CA"
+
+# CA intermédiaire
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 \
+  -out intermediate/intermediate.key
+
+openssl req -new -key intermediate/intermediate.key \
+  -out intermediate/intermediate.csr \
+  -subj "/C=FR/ST=IDF/O=Formation/CN=Formation Intermediate CA"
+
+# Signer la CA intermédiaire avec la Root CA
+openssl x509 -req -days 1825 -in intermediate/intermediate.csr \
+  -CA ca/ca.crt -CAkey ca/ca.key \
+  -CAcreateserial -out intermediate/intermediate.crt \
+  -extensions v3_ca
+
+# Créer la chaîne de confiance
+cat intermediate/intermediate.crt ca/ca.crt > intermediate/chain.crt
+```
+
+## Émettre des certificats serveur
+
+```bash
+# Générer la clé et la CSR
+cat > san.conf << 'EOF'
+[req]
+default_bits = 2048
+prompt = no
+default_md = sha256
+req_extensions = req_ext
+distinguished_name = dn
+
+[dn]
+C = FR
+ST = IDF
+O = Formation
+CN = webapp.example.com
+
+[req_ext]
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = webapp.example.com
+DNS.2 = www.webapp.example.com
+IP.1 = 192.168.1.100
+EOF
+
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
+  -out certs/webapp.key
+
+openssl req -new -key certs/webapp.key -out certs/webapp.csr -config san.conf
+
+# Signer avec la CA intermédiaire
+openssl x509 -req -days 365 -in certs/webapp.csr \
+  -CA intermediate/intermediate.crt \
+  -CAkey intermediate/intermediate.key \
+  -CAcreateserial -out certs/webapp.crt \
+  -extfile san.conf -extensions req_ext
+
+# Vérifier
+openssl verify -CAfile intermediate/chain.crt certs/webapp.crt
+openssl x509 -in certs/webapp.crt -noout -text | grep -A4 'Subject Alternative'
+```
+
+## Let's Encrypt avec Certbot
+
+```bash
+# Installation
+apt install certbot python3-certbot-nginx -y
+
+# Émission (mode standalone, port 80 doit être libre)
+certbot certonly --standalone -d example.com -d www.example.com \
+  --email admin@example.com --agree-tos --no-eff-email
+
+# Mode nginx
+certbot --nginx -d example.com
+
+# Renouvellement
+certbot renew --dry-run
+certbot renew
+
+# Vérifier les certificats
+certbot certificates
+
+# Automatiser le renouvellement (déjà fait par le paquet systemd timer)
+systemctl status certbot.timer
+```
