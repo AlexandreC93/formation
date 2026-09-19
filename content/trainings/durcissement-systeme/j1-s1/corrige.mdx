@@ -1,65 +1,37 @@
----
-title: Corrigé — Exploration de l'arborescence système
----
+# **Corrigé TP : Analyse**
 
-# Corrigé — Exploration de l'arborescence système
+&nbsp;
 
-## Exercice 1 — Cartographie du système
+## **1\. Synthèse de la Surface d'Attaque**
 
-```bash
-# 1. Fichiers /etc modifiés dans les 7 derniers jours
-find /etc -maxdepth 2 -type f -mtime -7 -printf '%TY-%Tm-%Td %TH:%TM  %p\n' | sort
+Voici le tableau complété avec les observations typiques relevées sur les deux machines "sorties d'installation" avant durcissement :
 
-# 2. Les 10 plus gros fichiers dans /var
-find /var -type f -printf '%s %p\n' 2>/dev/null | sort -rn | head -10 | awk '{printf "%.1fMB  %s\n", $1/1048576, $2}'
+| Composant analysé | Machine Linux | Machine Windows Server | Risque potentiel identifié |
+| :---- | :---- | :---- | :---- |
+| **Comptes & Privilèges** | • Accès direct root actif. • Utilisateur de stage membre complet de sudo sans restriction de commandes. • Présence possible de faux comptes de service avec un shell /bin/bash. | • Compte Administrateur local par défaut non renommé. • Compte Invité (Guest) parfois mal désactivé. • Mots de passe sans politique stricte de complexité ou de verrouillage. | Élévation de privilèges directe, attaques par force brute (*credential stuffing*) facilitées par des noms de comptes prévisibles. |
+| **Ports exposés (0.0.0.0)** | • Port 22 (SSH) ouvert à tous. • Port 631 (CUPS / impression) en écoute. • Port 111 (rpcbind) actif. | • Port 3389 (RDP) exposé à tout le sous-réseau. • Ports 445 (SMB) et 135 (RPC) ouverts. • Port 5985 (WinRM HTTP) actif. | Écoute réseau globale sans restriction d'IP source ; vecteurs directs d'attaques à distance (*Man-in-the-Middle*, exploits RDP/SMB). |
+| **Services inutiles actifs** | • Serveur d'impression (cups.service). • Résolution mDNS (avahi-daemon). • Agent de messagerie local (postfix ou exim4). | • Spouleur d'impression (*Print Spooler* \- vulnérabilités type PrintNightmare). • Registre à distance (*Remote Registry*). • Télémétrie et services multimédia. | Élargissement inutile de la surface d'attaque : failles potentielles exploitables sur des services sans utilité serveur métier. |
+| **Permissions / Partages** | • Droits trop permissifs sur certains dossiers temporaires (/tmp sans options noexec). • Binaires avec bit SUID actif (ex: passwd, su, parfois détournables). | • Partages administratifs cachés actifs (C$, ADMIN$, IPC$). • Dossiers de test partagés accessibles à "Tout le monde" (*Everyone*). | Mouvements latéraux sur le réseau local, fuite de données et élévation de privilèges via GTFOBins sous Linux. |
+| **Posture Pare-feu** | • ufw ou nftables inactif (Status: inactive). • Chaînes par défaut à ACCEPT sans filtrage local. | • Profil Privé ou Public désactivé par commodité lors des tests. • Règles entrantes trop permissives (tous flux autorisés sur le subnet). | Aucune défense en profondeur : si un attaquant accède au réseau interne, aucun filtrage local ne bloque ses scans ou attaques. |
 
-# 3. Sous-répertoires de /usr triés par taille
-du -sh /usr/* 2>/dev/null | sort -rh
-```
+## 
 
-## Exercice 2 — Analyse de /proc
+## 
 
-```bash
-# 1. PID de sshd via /proc sans pgrep ni ps
-grep -l 'sshd' /proc/*/comm 2>/dev/null | head -5
-# Ou :
-ls /proc | while read pid; do
-  [[ -f /proc/$pid/comm ]] && grep -q 'sshd' /proc/$pid/comm && echo $pid
-done
+## 
 
-# 2. Arguments de démarrage d'un processus (ex: PID 1234)
-cat /proc/1234/cmdline | tr '\0' ' '; echo
+## **2\. Réponses clés**
 
-# 3. Fichiers ouverts par PID 1 (systemd)
-ls /proc/1/fd/ | wc -l
-# Ou avec détails :
-ls -la /proc/1/fd/ | wc -l
-```
+### **Linux**
 
-## Exercice 3 — Recherche avancée
+* **Comptes interactifs :** Seuls les comptes réels (ex: stagiaire ou admin) et root doivent disposer d'un shell. Les comptes comme daemon, games, www-data doivent avoir /usr/sbin/nologin.  
+* **Ports et services :** Faire remarquer la différence fondamentale entre 127.0.0.1:port (accessible uniquement en local par le serveur) et 0.0.0.0:port / :::port (exposé à tout le réseau d'entreprise).  
+* **Fichiers critiques :**  
+  * /etc/shadow doit être strictement en 640 ou 400 appartenant à root:shadow.  
+  * Tout binaire SUID atypique (ex: find, vim, python) doit être immédiatement signalé comme une anomalie critique.
 
-```bash
-# 1. Fichiers SUID
-find / -perm -4000 -type f 2>/dev/null
-# Avec détails :
-find / -perm -4000 -type f -exec ls -lh {} \; 2>/dev/null
+### **Windows Server**
 
-# 2. Fichiers entre 100 Mo et 500 Mo
-find / -type f -size +100M -size -500M 2>/dev/null | head -20
-
-# 3. Liens symboliques cassés dans /etc
-find /etc -type l ! -exec test -e {} \; -print 2>/dev/null
-```
-
-## Exercice 4 — Points de montage
-
-```bash
-# 1. Systèmes de fichiers montés
-findmnt --output TARGET,SOURCE,FSTYPE,SIZE,USED,AVAIL,USE%
-
-# 2. Systèmes tmpfs
-df -hT | grep tmpfs
-
-# 3. Ratio utilisation/disponible
-df -h | awk 'NR>1 {gsub(/%/,"",$5); if($5>0) printf "%-20s %s%% utilisé (dispo: %s)\n", $6, $5, $4}'
-```
+* **Compte Administrateur :** Il doit être renommé et son mot de passe durci, car le RID 500 est ciblé en priorité par les scripts automatiques.  
+* **RDP :** Expliquer qu'un port 3389 ouvert sur toutes les interfaces sans NLA (*Network Level Authentication*) expose la machine aux attaques de pré-authentification (comme *BlueKeep*).  
+* **Partages :** Rappeler que les partages administratifs (C$, ADMIN$) sont natifs, mais qu'ils doivent être surveillés et isolés via le pare-feu local pour empêcher les outils d'administration malveillants (PsExec).
