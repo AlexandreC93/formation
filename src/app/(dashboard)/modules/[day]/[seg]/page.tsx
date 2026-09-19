@@ -23,7 +23,16 @@ export default async function ModulePage({ params }: PageProps) {
 
   const trainingId = session.training_id || 'administration-linux';
   const config = await getTraining(trainingId);
-  if (!config) notFound();
+  
+  if (!config) {
+    console.error(`[Training Error] Folder not found: content/trainings/${trainingId}`);
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-slate-300">
+        <h1 className="text-2xl font-bold text-red-500 mb-4">Erreur système</h1>
+        <p>Formation introuvable sur le serveur : <code>{trainingId}</code></p>
+      </div>
+    );
+  }
 
   // 3. Résolution du segment demandé
   const segment = getSegmentBySlug(config, day, seg);

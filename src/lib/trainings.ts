@@ -90,9 +90,8 @@ export async function checkPdfExists(
 ): Promise<boolean> {
   const filePath = join(process.cwd(), 'content', 'trainings', trainingId, segmentSlug, `${type}.pdf`);
   try {
-    const { access } = await import('fs/promises');
-    await access(filePath);
-    return true;
+    const { existsSync } = await import('fs');
+    return existsSync(filePath);
   } catch {
     return false;
   }

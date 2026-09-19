@@ -7,7 +7,8 @@ export function proxy(request: NextRequest) {
   if (pathname.startsWith('/modules')) {
     const sessionCode = request.cookies.get('session_code')?.value;
     if (!sessionCode) {
-      return NextResponse.redirect(new URL('/login', request.url));
+      const loginUrl = new URL('/login', request.url);
+      return NextResponse.redirect(loginUrl);
     }
   }
 

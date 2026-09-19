@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { logoutAction } from '@/app/actions/auth';
 import { Lock, Unlock, ChevronDown, ChevronRight, GraduationCap, LogOut, Download, Menu, X } from 'lucide-react';
 import type { Segment, TrainingConfig } from '@/lib/trainings';
 
@@ -224,10 +225,10 @@ export function MobileNav({
                   Télécharger (ZIP)
                 </a>
               )}
-              <form action="/api/logout" method="post">
+              <form action={logoutAction}>
                 <button
                   type="submit"
-                  className="w-full flex items-center gap-2 px-3 py-3 rounded-lg text-slate-500 hover:text-slate-300 hover:bg-white/5 transition-all text-sm"
+                  className="w-full flex items-center gap-2 px-3 py-3 rounded-lg text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-all text-sm"
                 >
                   <LogOut className="w-4 h-4" />
                   Déconnexion
