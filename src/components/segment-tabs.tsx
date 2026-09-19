@@ -4,22 +4,38 @@ import { useState } from 'react';
 import { BookOpen, FlaskConical, Lock, CheckCircle, FileText } from 'lucide-react';
 import { MdxContent } from './mdx-content';
 import type { JSX } from 'react';
+import type { MdxResult } from '@/lib/mdx';
 
 type Tab = 'cours' | 'tp' | 'corrige';
 
 interface SegmentTabsProps {
-  coursContent: JSX.Element;
-  tpContent: JSX.Element;
-  corrigeContent: JSX.Element | null; // null = non libéré
+  coursResult: MdxResult;
+  tpResult: MdxResult;
+  corrigeResult: MdxResult | null; // null = non libéré
   segmentTitle: string;
   hasPdf: { cours: boolean; tp: boolean; corrige: boolean };
   pdfUrlBase: string;
 }
 
+function RenderMdxOrError({ result }: { result: MdxResult }) {
+  if (result.error) {
+    return (
+      <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl my-6">
+        <h3 className="text-red-400 font-bold mb-2">Erreur de rendu MDX</h3>
+        <p className="text-red-300 text-sm font-mono whitespace-pre-wrap">{result.error}</p>
+      </div>
+    );
+  }
+  if (result.content) {
+    return <MdxContent content={result.content} />;
+  }
+  return null;
+}
+
 export function SegmentTabs({
-  coursContent,
-  tpContent,
-  corrigeContent,
+  coursResult,
+  tpResult,
+  corrigeResult,
   segmentTitle,
   hasPdf,
   pdfUrlBase,
@@ -29,10 +45,10 @@ export function SegmentTabs({
   const tabs: Array<{ id: Tab; label: string; icon: typeof BookOpen }> = [
     { id: 'cours', label: 'Cours', icon: BookOpen },
     { id: 'tp', label: 'TP', icon: FlaskConical },
-    { id: 'corrige', label: 'Corrigé', icon: corrigeContent ? CheckCircle : Lock },
+    { id: 'corrige', label: 'Corrigé', icon: corrigeResult ? CheckCircle : Lock },
   ];
 
-  const currentHasPdf = hasPdf[activeTab] && (activeTab !== 'corrige' || corrigeContent);
+  const currentHasPdf = hasPdf[activeTab] && (activeTab !== 'corrige' || corrigeResult);
 
   return (
     <div className="flex flex-col h-full relative">
@@ -61,14 +77,14 @@ export function SegmentTabs({
               >
                 <Icon
                   className={`w-4 h-4 flex-shrink-0 ${
-                    id === 'corrige' && !corrigeContent
+                    id === 'corrige' && !corrigeResult
                       ? 'text-slate-600'
                       : activeTab === id
                       ? 'text-indigo-400'
                       : 'text-slate-500'
                   }`}
                 />
-                <span className={id === 'corrige' && !corrigeContent ? 'text-slate-600' : ''}>
+                <span className={id === 'corrige' && !corrigeResult ? 'text-slate-600' : ''}>
                   {label}
                 </span>
                 {activeTab === id && (
@@ -81,7 +97,7 @@ export function SegmentTabs({
           {/* Bouton PDF si disponible */}
           {currentHasPdf && (
             <a
-              href={`${pdfUrlBase}?type=${activeTab}`}
+               href={`${pdfUrlBase}?type=${activeTab}`}
               className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 mb-1 rounded-lg bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/30 border border-indigo-500/30 transition-all text-xs font-semibold whitespace-nowrap"
             >
               <FileText className="w-3.5 h-3.5" />
@@ -108,7 +124,7 @@ export function SegmentTabs({
       <div className="flex-1 overflow-y-auto px-4 md:px-6 py-6 pb-20 md:pb-6">
         {activeTab === 'cours' && (
           <div className="animate-fade-in">
-            <MdxContent content={coursContent} />
+            <RenderMdxOrError result={coursResult} />
           </div>
         )}
         {activeTab === 'tp' && (
@@ -120,12 +136,12 @@ export function SegmentTabs({
                 <p className="text-slate-500 text-xs">Réalisez cet exercice avant de consulter le corrigé</p>
               </div>
             </div>
-            <MdxContent content={tpContent} />
+            <RenderMdxOrError result={tpResult} />
           </div>
         )}
         {activeTab === 'corrige' && (
           <div className="animate-fade-in">
-            {corrigeContent ? (
+            {corrigeResult ? (
               <>
                 <div className="flex items-center gap-3 mb-6 p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-xl">
                   <CheckCircle className="w-5 h-5 text-emerald-400 flex-shrink-0" />
@@ -134,7 +150,7 @@ export function SegmentTabs({
                     <p className="text-slate-500 text-xs">Solution validée par le formateur</p>
                   </div>
                 </div>
-                <MdxContent content={corrigeContent} />
+                <RenderMdxOrError result={corrigeResult} />
               </>
             ) : (
               <div className="flex flex-col items-center justify-center py-16 md:py-20 text-center px-4">

@@ -55,7 +55,10 @@ export default async function ModulePage({ params }: PageProps) {
     checkPdfExists(trainingId, segment.slug, 'tp'),
   ]);
 
-  if (!coursResult || !tpResult) notFound();
+  if (!coursResult || !tpResult) {
+    // Les fichiers physiques n'existent pas du tout
+    notFound();
+  }
 
   // 6. Corrigé uniquement si explicitement libéré
   const solutionUnlocked = session.unlocked_solutions.includes(segment.index);
@@ -72,9 +75,9 @@ export default async function ModulePage({ params }: PageProps) {
   return (
     <div className="h-full">
       <SegmentTabs
-        coursContent={coursResult.content}
-        tpContent={tpResult.content}
-        corrigeContent={corrigeResult?.content ?? null}
+        coursResult={coursResult}
+        tpResult={tpResult}
+        corrigeResult={solutionUnlocked ? (corrigeResult || { error: "Fichier de correction introuvable" }) : null}
         segmentTitle={`${segment.dayLabel} — S${segment.seg} : ${segmentTitle}`}
         hasPdf={{ cours: hasCoursPdf, tp: hasTpPdf, corrige: hasCorrigePdf }}
         pdfUrlBase={`/api/modules/${day}/${seg}/pdf`}

@@ -8,8 +8,9 @@ import type { JSX } from 'react';
 export type MdxType = 'cours' | 'tp' | 'corrige';
 
 export interface MdxResult {
-  content: JSX.Element;
-  frontmatter: Record<string, unknown>;
+  content?: JSX.Element;
+  frontmatter?: Record<string, unknown>;
+  error?: string;
 }
 
 const rehypePrettyCodeOptions = {
@@ -32,6 +33,10 @@ export async function loadMDX(
     `${type}.mdx`
   );
   try {
+    const { existsSync } = await import('fs');
+    if (!existsSync(filePath)) {
+      return null;
+    }
     const raw = await readFile(filePath, 'utf-8');
     const { content, frontmatter } = await compileMDX<Record<string, unknown>>({
       source: raw,
@@ -40,11 +45,15 @@ export async function loadMDX(
         mdxOptions: {
           remarkPlugins: [remarkGfm],
           rehypePlugins: [[rehypePrettyCode as never, rehypePrettyCodeOptions]],
+          format: 'md', // force markdown parsing to avoid JSX tags crashes like <IP_SERVEUR>
         },
       },
     });
     return { content, frontmatter };
-  } catch {
-    return null;
+  } catch (error) {
+    console.error(`[MDX Render Error on ${segmentSlug} - ${type}]:`, error);
+    return {
+      error: `Erreur de compilation du document : ${error instanceof Error ? error.message : 'Erreur inconnue'}`
+    };
   }
 }
