@@ -1,113 +1,109 @@
----
-title: Corrigé — Sécurisation des accès utilisateurs
----
+# **Corrigé TP : Scans de Vulnérabilités et Détection d'Anomalies (Windows & Linux)**
 
-# Corrigé — Sécurisation des accès utilisateurs
+##  **1\. Réponses aux questions de guidage par partie**
 
-## Exercice 1 — Création de comptes métier
+### **Partie 1 : Cartographie Rapide et Bannières Réseau**
 
-```bash
-#!/bin/bash
-# Créer les groupes
-groupadd -f ops
-groupadd -f deploy
-groupadd -f audit
-groupadd -f docker
+#### **1.1 Inspection des bannières (*Banner Grabbing*)**
 
-# ops-admin
-useradd -m -s /bin/bash -g ops -G sudo,docker -c "Ops Admin" ops-admin
+* **Le numéro de version exact de l'application apparaît-il en clair dans la bannière ?**  
+  * Oui, par défaut la plupart des services non durcis renvoient leur version complète (ex. OpenSSH\_8.9p1 Ubuntu-3ubuntu0.6, Apache/2.4.52 (Ubuntu), ou l'en-tête Server: Microsoft-IIS/10.0).  
+* **Pourquoi la divulgation de cette version représente-t-elle un gain de temps majeur pour un attaquant ?**  
+  * Elle évite à l'attaquant de tester des exploits à l'aveugle au risque de faire planter le service ou de déclencher des alertes dans les sondes IDS/IPS. Il peut cibler directement les failles CVE répertoriées pour cette version précise.
 
-# svc-nginx (compte de service, pas de shell)
-useradd -r -s /sbin/nologin -g www-data -c "NGINX Service" svc-nginx
+#### **1.2 Détection active via Nmap et les scripts NSE**
 
-# deployer
-useradd -m -s /bin/bash -g deploy -G docker -c "Deployer" deployer
-# Forcer l'authentification par clé SSH (dans sshd_config) :
-# Match User deployer
-#   PasswordAuthentication no
+* **Quels services sont identifiés comme vulnérables par Nmap ?**  
+  * Sur Linux : détection éventuelle de versions d'Apache ou de protocoles d'écoute non chiffrés.  
+  * Sur Windows : détection possible de vulnérabilités SMB si SMBv1 est actif ou si les correctifs mensuels accumulent du retard.  
+* **Alertes SMB sur Windows :**  
+  * Mise en évidence de l'absence de signature SMB obligatoire (message\_signing: disabled), du dialecte SMBv1 ou de failles de type fuite d'informations NetBIOS.
 
-# auditor (shell restreint)
-useradd -m -s /bin/rbash -g audit -c "Auditor" auditor
-```
+### **Partie 2 : Préparation des Accès d'Audit Authentifié**
 
-## Exercice 2 — Permissions sur répertoire applicatif
+#### **2.1 Cible Linux (Commandes de validation)**
 
-```bash
-#!/bin/bash
-# Structure
-mkdir -p /opt/webapp/{conf,logs,uploads}
+\# Création et configuration du compte de scan  
+sudo useradd \-m \-s /bin/bash auditscan  
+echo "auditscan:AuditSecurite2026\!" | sudo chpasswd  
+echo "auditscan ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/auditscan  
+sudo chmod 440 /etc/sudoers.d/auditscan
 
-# Propriétaire général
-chown -R root:root /opt/webapp
-chmod 751 /opt/webapp
+\# Test de validation depuis la machine d'audit  
+ssh auditscan@\<IP\_LINUX\> "sudo uname \-a && sudo id"  
+\# Résultat attendu : uid=0(root) gid=0(root) groups=0(root)
 
-# conf/ : ops-admin rw, svc-nginx r, deployer rw, autres rien
-chmod 750 /opt/webapp/conf
-chown root:ops /opt/webapp/conf
-setfacl -m u:svc-nginx:r-x /opt/webapp/conf
-setfacl -m u:deployer:rwx /opt/webapp/conf
-setfacl -d -m u:svc-nginx:r-x /opt/webapp/conf
-setfacl -d -m u:deployer:rwx /opt/webapp/conf
+#### **2.2 Cible Windows Server (PowerShell Administrateur)**
 
-# logs/ : ops-admin rw, svc-nginx rw, deployer rien
-chmod 750 /opt/webapp/logs
-chown root:ops /opt/webapp/logs
-setfacl -m u:svc-nginx:rwx /opt/webapp/logs
-setfacl -d -m u:svc-nginx:rwx /opt/webapp/logs
+\# Configuration du service WinRM  
+Enable-PSRemoting \-Force  
+Set-Service \-Name WinRM \-StartupType Automatic  
+Start-Service \-Name WinRM
 
-# uploads/ : ops-admin rw, svc-nginx rw, deployer rw, sticky bit
-chmod 1750 /opt/webapp/uploads
-chown root:ops /opt/webapp/uploads
-setfacl -m u:svc-nginx:rwx /opt/webapp/uploads
-setfacl -m u:deployer:rwx /opt/webapp/uploads
-setfacl -d -m u:svc-nginx:rwx /opt/webapp/uploads
-setfacl -d -m u:deployer:rwx /opt/webapp/uploads
+\# Vérification du pare-feu local  
+Get-NetFirewallRule \-DisplayGroup "Gestion à distance de Windows" | Select-Object DisplayName, Enabled, Direction
 
-# Vérification
-getfacl /opt/webapp/conf
-getfacl /opt/webapp/uploads
-```
+\# Autorisation explicite du flux HTTP WinRM si nécessaire  
+New-NetFirewallRule \-Name "WinRM-HTTP-In" \-DisplayName "WinRM HTTP 5985" \-Enabled True \-Direction Inbound \-Protocol TCP \-LocalPort 5985 \-Action Allow
 
-## Exercice 3 — Configuration sudo
+### **Partie 4 : Analyse des Résultats et Piège du Rétroportage**
 
-```bash
-# /etc/sudoers.d/webapp
-cat > /etc/sudoers.d/webapp << 'EOF'
-# Deployer : redémarrage nginx et php-fpm uniquement
-deployer ALL=(root) NOPASSWD: /usr/bin/systemctl restart nginx, \
-                               /usr/bin/systemctl reload nginx, \
-                               /usr/bin/systemctl restart php8.1-fpm, \
-                               /usr/bin/systemctl reload php8.1-fpm
+#### **4.2 Investigation du Rétroportage (*Backporting*)**
 
-# Ops-admin : toutes commandes systemctl
-%ops    ALL=(root) NOPASSWD: /usr/bin/systemctl *
+* **La CVE alertée par le scanner a-t-elle été corrigée malgré la version inchangée ?**  
+  * Oui. Dans le journal des modifications de Debian/Ubuntu (apt-get changelog apache2 ou openssh-server), la mention de la CVE est explicitement présente avec un numéro de révision de distribution (ex. 2.4.52-1ubuntu4.7). Le code vulnérable a été patché sans modifier le numéro de version majeure du logiciel.  
+* **Différence fondamentale entre scan non authentifié et authentifié :**  
+  * Le scan **non authentifié** lit uniquement la bannière réseau Apache 2.4.52 et applique une règle statique : version \< ![][image1] alerte critique (**Faux positif**).  
+  * Le scan **authentifié** interroge la base locale de paquets (dpkg \-l) et constate que la sous-version installée contient le correctif (**Vrai statut : Non vulnérable**).
 
-# Auditor : lecture journaux seulement
-auditor ALL=(root) NOPASSWD: /usr/bin/journalctl
-EOF
+### **Partie 5 : Actions Correctives Immédiates Validées**
 
-chmod 440 /etc/sudoers.d/webapp
-visudo -c  # Vérifier la syntaxe
-```
+#### **5.1 Désactivation des services non indispensables**
 
-## Exercice 4 — Audit des permissions
+* **Linux (CUPS) :**  
+  sudo systemctl stop cups cups-browsed  
+  sudo systemctl disable cups cups-browsed  
+  sudo systemctl mask cups
 
-```bash
-# 1. Fichiers SUID/SGID
-echo "=== SUID ==="
-find / -perm -4000 -type f 2>/dev/null | sort
-echo "=== SGID ==="
-find / -perm -2000 -type f 2>/dev/null | sort
+* **Windows (Spouleur) :**  
+  Stop-Service \-Name Spooler \-Force  
+  Set-Service \-Name Spooler \-StartupType Disabled
 
-# 2. Fichiers world-writable hors /tmp et /proc
-find / -perm -0002 -type f \
-  ! -path '/tmp/*' \
-  ! -path '/proc/*' \
-  ! -path '/sys/*' \
-  2>/dev/null | sort
+#### **5.2 Restriction Pare-feu**
 
-# 3. Vérification /etc/shadow
-ls -la /etc/shadow
-# Attendu : -rw-r----- 1 root shadow
-stat /etc/shadow | grep -E 'Access|Uid|Gid'
-```
+* **Linux (ufw) :**  
+  sudo ufw default deny incoming  
+  sudo ufw default allow outgoing  
+  sudo ufw allow from \<IP\_AUDIT\> to any port 22 proto tcp  
+  sudo ufw enable
+
+* **Windows (Pare-feu avancé) :**  
+  New-NetFirewallRule \-DisplayName "Filtrage RDP Admin" \-Direction Inbound \-LocalPort 3389 \-Protocol TCP \-Action Allow \-RemoteAddress "\<IP\_AUDIT\>"  
+  Set-NetFirewallProfile \-Profile Domain,Public,Private \-Enabled True
+
+## **2\. Livrable : Matrice d'Analyse des Vulnérabilités Complétée**
+
+| Équipement | Vulnérabilité / Port détecté | Score CVSS & Sévérité | Vecteur (AV) | Type | Action de remédiation validée |
+| :---- | :---- | :---- | :---- | :---- | :---- |
+| **Linux** | Démon CUPS actif (cups-browsed sur port 631 UDP) | ![][image2] (Critical) | AV:N | Vrai Positif | Service stoppé, masqué et désactivé via systemctl. |
+| **Linux** | Fausse faille RCE Apache (version amont obsolète) | ![][image3] (Critical) | AV:N | Faux Positif (*Backporting*) | Vérification du changelog apt-get ; exception consignée dans l'audit. |
+| **Linux** | Vulnérabilité d'élévation locale de privilèges (sudo) | ![][image4] (High) | AV:L | Vrai Positif | Mise à jour immédiate du paquet (apt \--only-upgrade install sudo). |
+| **Windows** | Spouleur d'impression actif (*PrintNightmare*) | ![][image5] (High) | AV:N | Vrai Positif | Service Spooler arrêté et désactivé par commande PowerShell. |
+| **Windows** | Protocole obsolète SMBv1 actif (risque *EternalBlue*) | ![][image6] (High) | AV:N | Vrai Positif | Désactivation de la fonctionnalité facultative SMB1Protocol. |
+| **Windows** | Écoute RDP globale (3389/TCP) sans restriction d'IP | ![][image7] (High) | AV:N | Vrai Positif | Règle de pare-feu restreignant l'accès RDP à l'IP d'administration. |
+
+&nbsp;
+
+[image1]: <data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGcAAAAZCAYAAAAsaTBIAAAFG0lEQVR4XtVZTYgcRRSezqrxD02EZXF3pqp7M4JZRNFB/EHxH8UgqAdB8BIED0aFgCASUET3kEsuIgoixOBBPETBCOqqiEaFCCooCCpkMQeJiisEBE/rV1Vd09WvX1VX9/SM+sFjut773veqXvXvbq/nQ0IdFkkgFociPfFKuf7xsY9cC1+iz98Sk7eGgaNIxfWYOjmEOKFYYIOCUEmtEnNE5XpIHvfU0LaeL6+2d4FgIKRRxOuYM0CTKYS4oViapjfAjkkpT+W/D1JODIQQtyL3uB7ogv6q4D4E7hV2PD8/fy5q74dd5fJclPQZ+KtNF2apSXgCKt4UWPAozdIf0JQbl5aW+hi/jgZswh6n3BBGo9HpyPkGdoLGOID3oa4jcjPHh1ZWVs6gXLXqsb6QJ1os8/8Dd3FY8Bo25nY7Hg6HW9XZCfsLx/MOVcPXGGjsRc7fcZuTqLofwb6GbeCEeA/2GGW51er1fTNzEcMxoEw61mCd3WELFnsK9uPy8vL51olGvaTPZHt7q5mE2kRwv4S9g9yfaZwDuB+g4Sn1c7WGw4uIPkOqQfMMHkEdX9Dnr8FpWPBvaiP6/f7QOoWUB5QPjXjUJfsA7gvg3obft/1ndhnSXLEp9XNoox8D07OWnbNI9PzewPy205ALWoWOWWRZdhnEb3Z96Nn7+ebc4vo5CClWwD2sjps0L9+c3ajxljTPqq9g11Ae4qx+1OJmBMzpTtibetD5xBxBFMmkubcfLUd4oHnv2qsOD+smm3NESvGcM34etg6tC4zHlC7p282hs6LjEpygl1cE7JGXykI/Q1+GPULc3QK3tEPqvq7e3GiMAs3dhQ05UIzjNydLs0vdMfJ2CvOcW7WrwvEuWCt9DrhSX0X+WmcmymPof4LfVf6Nc0JA/H6I/zEYDC6JOOHmwD1q7rXjZrZu3sLCwjnSbM63uWsOi8/1DSbR7w5cN5KxG/N7GPY5eni9E50MaMIIoscheiWNcVAvC+DvcX1u80ITAude2Elo3OeeA/nm/KoGFf2EbE6oAIXL9eVV/BVHAGUu5ni5VI8GIZ8tBRSayCos79gxgNhP7m5jfBOupLt9arpR9uORMSHkQZpjAd1npBDqheNp7Ui0b1ue+4VyaX1G1xpyD7qadbCr4FdTRSxPIycvLi6ejbmtwl7J8KJVJnkQKoSmnAk7pm5pamy5KLAPDb7L8tTGZTnHB6nfuETltoNGPoDYtXaM43tgr6mvfodzXd70p6yPwuiT25qasHeB5QC0X5T0uTE2wfga2WewP9HHO0pFo8EsQp2BEN3IC3wM+x5XxO/43UShi3MabjlCfaxuSufvYQWMMGLfwX5xI3jwX53nbTjuRL2FpcXf0dTH8BFVu98fnOXQisMerx8HZuE9n7chjMgcXmYOS/JJ0hzOjPBlf17eONbctw6MP4WdLF51C8C/D7bu5K6j8U+qGC7vBYzVZq+RnAulef1Uf2NTX//qLZH9kNP6gtf/V5H3EnPZi7k/UQ42BXOqlF0MYSYI1A2EpgFTrllRbM5+/Gyh/nhw9ca+IsjRJkNbxTZtikQjUUpOqq6qY/qI+z9lDIdBMM0TbOYuUEsIg01nnR404bZCmwIqJyovilSPBjINqAR8Ju8twMU5X2MUImU5PapUqDh6ysd5u0fXVbrWmxHC0w5HDfwcf8SAxun4v4z6uY4ZVWrV0y2mq+9XL0f8PC9qUyauUGCi5AhMW79LlOY6o4nXlfkH0xlTL3EEe3gAAAAASUVORK5CYII=>
+
+[image2]: <data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABcAAAAWCAYAAAArdgcFAAACtklEQVR4Xo2UO2gVQRSGdyOCWCjY5ZI7M3tzQRCEPApFsfSF2Nj5ArVQCxULURAbhaiNYCcipNAUolipIAgixiAi6G2SykIwwSSWYmEh+p0zs7uzuzfi4Z7dOf/5zz9nHnuT5D8sTVMeMvAuL/+ILa3h+SCq7ZOqWqGw4iyR1VUbVk5TodVq/ikxNDS02Vr7Dv+If8EPayJUVaWrHQnXWjOLzxlj3jvnthRJgE0QvvPeLyWQRokXiHcqIdKS7Y8N7iH8G/xMONQctcYuEw8qnYBZ7bynp/qDdANsLocqFmI4HTg/jTUPYgp6b8ndSdrtdhfCH2PtTJRPXOZOGcFZVYl6Ce2eB3UnpJZtuFlymNTaKVazkJAYYSCEN2V5IvhxndSYI2XnflX5kNw5qUVsQoA8Rd2kNCZLyEQEn9ZkYCB+PuAXPJ5G++0HcI6puDHXI1jO4YmK+8DOEnwuG9MlP2Ji6epWoRks77HT6RgRkU51cp8eIF6UxrQj57KtBMt0sluyjLfhM75zc62yHTWj65PwvlLrCFP4Z4l7XjxY5rKNAI/xl/gVuKeFIO+CJJZPIu9yC/fAfYU/R/wAPqXbUvvuCmNLLgfxkZU4FTQKWM0LapcUZbCPu3q/1WqtVU6qGKswvUZlNJZJ2fSLmXNXI3AVtYtgtzWyei/ZX2O2S56DWk/8Cz8TCvTBN7GD8zkYTwBnXriK8csyt4v4Nz6qNEQv4T2XuTXdbncdiUm25aGXLYQ4LPvDN2HHFEhV/Blbd1dow53hNvEnbcqXpcnY+PhqgAkr18/aD/JxkBiQ4kBRIzfNQS3xJ7chZOROD4Lfw5/ir2lyb1zT+DjiqIpUTQ+61kBAc9GmRJSMgDorsnqiHovFeoWF5ipd9q0u22xmC5Ea2EDyOL79TV7DKumYX383rG9nyV+5HpQBv+UwZwAAAABJRU5ErkJggg==>
+
+[image3]: <data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABcAAAAWCAYAAAArdgcFAAACzUlEQVR4Xn2Uy4sTQRDGM8KKiKug5LJJumeSsIGAoAmi+DguguJNF8QHKgFFRUQFZfEkiCcP/gOKj4NkQVBPIqysy+JBV7zoSdHDCr4u4klE4q96ujM9j7Wgp6e+qu/rqppOSqVSUMqbxfxQIE4CDN/SsAf+D0qxEzcDFxuF5LR8YpFYhmLxFDOTYYWq1ep6pfULrdVr1iet9YE8qUAcU0rtI/9xGIYP2afR2TXMJNgG/M6+R3zEN+J/xp/wKy8yydFK9cdbrVHJGRurrEP8g9JqUuIBQm9Zi9Kh0QgM6RpJ79JSmaYDKUQ/o+LNPo5wTys9K+NoIjJgzSfhoAThOB0MlNLtBHdhOSQ+CN5HDjjlhylsL9xXIrJBxMMwem54NgH8qBHX6qDHs2azOAThGdZf1pSLyfxZ5+UlYg2Y21xCNuJn5VBiF2KKNadrn/AOCd/mPoB3A+xWt9sdMSnMR2b+3lAsGb9vDtXqeowsbQheQkPEKVL/ltvjB7cAfmPfKT5JWzl93lSj9JVhYpC/6a3W+Ci8R3ybw/AW7AGMOTwiDJMURWGLwDTrKSdfJnhCxCP24pHERs4TOMecz3sP/i+K+5POdBZfsSmpQj64hcwlkeUsvuP6S7vdXu4LgU8K1zgk7Ma5UxmrrIznbr64dPFG4oaWPIZG/KSWK1xQIPiieaG1e/babRO/Xq+vkQ9Dwmm/0lqttoMruz/2AirUE/B+8ltZ6zCxcrm8Cu6POEmri1JlGIUrms3mat5vQrwvPXjVyi9ZZjlg71gITElhC4xiuyCNRqMWheFtCu6ZlE6nOwLhKkl9Kn5J4hngZdluic8h/lUqdR3J6XDPsWbgzZJzlw435UYV++66yTNIfcDszOO+0lhW05gDzZ5Mwr3kzQh7Tg70uKaCbMDXTokNIYtlI86Wwj2LW/eqKzC/roKMAqioA99xfwe+slfIPxv2k0OYHTQMAAAAAElFTkSuQmCC>
+
+[image4]: <data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABcAAAAWCAYAAAArdgcFAAACc0lEQVR4Xo1Tv2sUQRS+EbRSIZGDwN3O7N55HBxWHiJILNOkNoEUihzBQotAtAgpLC0FwVIQMRhIwBAtxOZCiEEQ70/QNCkM2IiViJzfm5k3P3b2xAdvd+Z733zzzdvZWk2HMC/3rp7qEBYW5eLEtWWiDSsUVRPR/wqzKF4qUgOROI9DHk2Fpykp7ygln5qCTRelhRqKESnlglTybZ7nu0qpbeS8Y6D4CMB4UkqpWsRzPgMDqM3B2Fa32z1HYKPRuACzX6C5qAkQeAXCWDpB6cWl2jSKVtmO2Tw4e3B81ZcFYcsQ37cE+YF2dHUEFswgP+V5MaONJr0xAaEj5D0auzYreQP5mQmPmcwB7B1y3gEl8cD5EPkHYutco/4Du89zHdxLtGdQtaGJsAH6e900LaVWytc47RNgz/v9/unIEQ07FzvnIXxSFIXyFU+L7o4eilqR52v0ffBxaYNfdHs8yYUgJysg7qSVNOikdEvg9g3W3cLHH9EmlMBuM40Xn8I1+griQ8acaDIxAe57iA0YxXgZ+RP520D2eDjSNd07PlaV3Vh4Dm6/9Xq9M1yjKt1x4GNHpADwgO46irP+7pnNk32EdnkXeViu0lLgx8zTT4jTr0s9u+yIPEBkWXYdvVxijJzDzI9mszntWaJWr9fPQut79HOA+JGOA5FLHrYjnNj2MtycsA3kSJ8W0W61syIvXlDvA2eCxJ8BPAJxSuP+od+oHSBP2ClvC2wVpob0y2P8Euau2EWWMWFs5mWEwm9a8bJh++JAEY5LoolA1aYm0kqlFu8WS/IsFeFInPx7XsajCmvFpNhRGGyYe+6kElPBymD4F4ipfhwH9WMKAAAAAElFTkSuQmCC>
+
+[image5]: <data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABcAAAAWCAYAAAArdgcFAAACz0lEQVR4XnWVu2sVQRTGd30hmBRq1qi5d2Y3wVy42JggFmojWCjY+cBCEUmjgoWJIlopCCI2+g9oiIUmIDGxsVGCKBamsFdsLCLYRBFRkevvzGsfd3PI7M75znfOfHNm9iaKsDg8VjKCsYzguUmelGPluX2XijtGcdViUpfFlVgts0ZJAbBYd5mgo8vcdrXWu9I0fcL7uVZ6Wil1kehqQwlcO6qF4B4jb578Z7xnGIdDEGcbhAWl9aCD4jTN5sDvB5IPVCbkHYQ33WoN94o/MDCwGf8T+HFDwLmJ2st5Xhw1m40d4H+SvqTHo3UG51WWpntKmNJjItY4bGdSafU4D8deQWc772I7qktorT7Du2BifjdaHWWB98ah+A1a0mHMZFm63hL0OKvPdpWruBR+yfhHwWs+RuF5sHHjNBqmBT9R0SHwAeIV/LdZmm0t1ClYvoJS+pTsUAaCniL0HqIejI6Mrg1kCh+AsExxT7xLYE25lPMc4HFEXLULKMn9Lbcn3Hx5UfRORnsYk0EJCgLDcKsdj6LhVqsXtXNwT5Oz6HPBztjCWl8n+FDIzt/LYh+1UrLAEVOlWDfMY7mKL+Cf9ZDcFPwfjL8S3MjkO2PEEuyG8DPB6ektXyqY24Xccdq31G631/niki13XNRzn5s7ZdLfv2VDOdksMEWbbpdAZ07AeZS+KeOWR+xL1KJnEH7hHPKK/FPLNVN8yq5uo9HcTy9PhsWVlq9zmdu2ySI2kCR9Pdy4b8ZPs+wcJ70kh4K7KkmSHpImRLlJkRwkwZFedqSFkid/zB8xFsndJ9yhocGmfJRgY2GzcnAc4Cxq3mn5EcrSE7amN7mu+jXjq1FqitutsuglZXapFphP0erdIc2mruC5qUfKPGflfwY1FuLdhYNb4eTPot+V5q0GrkIllbE/j5K4nFELBqjGfKdX8ksWV9TkcK05vBz2worBOPoPFJqQjJsBgY0AAAAASUVORK5CYII=>
+
+[image6]: <data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABcAAAAWCAYAAAArdgcFAAACaklEQVR4XnVUPWtUQRTNUwtBQ1BZNmbnzcdC2MbGVAvBQrsIqcXGLoWNSNbYWK0giFhZ2alsE7UJai2IIhZpLLTyB2iZhCAIoufO99w3uWHezpx77rln7tvN3ByPxj3sRzjyZxOyPuLxKLxz7u6SBu14JYsiXW1aEeAQP4cgAyEnlbqotX6plHqH9UpJeQvw8Vp15yY+hsPhghDibAEqqc5D7IOUckhn6olGb9DkSUGkXKbozTWiFcuo3YDB76jZtLnQWil5H4mtWIeqVohl4H96vd7pwiOza28r1SeIzrD+ocaK54QX6LxtD754MBicI/ISPjNqx3kogMZYWnHnPIY2eoqOlHhttD5JGPYTjGonzbd0zy4AcTN2zpm4oBFIdeiTXyF6Fy4+w81izktjyz79PjqXubi/GkSvYO0hSQRq8hhuTwSS/eN2s8CNx1SHBpsdE0g8MtpMaf50A3KB9/CM81KUCB+Lz1rX9yD0PDjEfhXYD9tEyvVI5h2iAjkncfveJpGL4jNwvQ9wJVU3dBMD94Q/8KCvSNt0auzM3VjkJMJt214gh/1+/1QEfRnEZ8bohzkWgs/firux3HEErNFoNA/gN9Za8u0ewN5jXfUwGbkEketRN3OfiW9lA7CJmwB/YkQ3cD5Gv0pygDXzNGI2uMmB/6GsZLh9ArtMY4HWNOVs2r7EdcxrBy/lC0hvjdbXQjYEBD5i/RJt6/85YdbG3Ab2Deuv/wrTV3kXOk+LUbIxWiSNoJbNdkU61uVoRmf8mjTnOPToEz/6ILRSRuI1B116OGeMoFDgtXDcOqOOJu1OvgOkyFL/Aed5en/akcz0AAAAAElFTkSuQmCC>
+
+[image7]: <data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABcAAAAWCAYAAAArdgcFAAACZUlEQVR4XpVUPWgUQRTeSRAtRFFjFG93fm6vUxC8zmhlJ2KnYCVEEDsbQQsTtdEmWFnaCbGwsAxEi4Aegeus7LTQJpWFYCfxezPz5mdv9sDHvZ153/ve3+zsVZUXIaDBcI9gp8K8orNHIndOVOZyRt5CYlG3pVz5BPOknxA8Usq7SqlXYd7O3B0zirCx15qmuY79oqcI5LqjjblnY0B4DmC/T6WSQ06WCWytzdMuH9i0buqB5QDYVDIkyohKybecqCRG62fgfYX+gk7Q6IulpZOHnVfY5J8HZwYn7DvworU+DZ3S2peYBMmegHO7iwdBdy+j5TKh4Bb0ajeva4BP1yZfi8kjXh7VTbJqC6ajsDuJpz24a1KpdaxvELOD9QfFl2Kr0Wh0BM49vG1lgdBFJLudu9Po/CE634YeIhT2TRT7K6VaCQEsAO8j+XtnpWm6Iwv7a4dtMxy2R53T+gQuB3U/SRui/QJG+4bq6z72v4UaUVJO0P0+I1YAXKTrh+5vpIeQFQmftaDzNtCf4G9Ef0U3bZvy+ED3BPCA7js6vxTIXvICbgHvCnWIuI/RISr6iELnHAjSO6oIveChzI/P/DK6usW4MeYUuF/atl1mbDweH0Di38A/MGYFwC4lR5Jz4TDilaL/DApyxT2M/QamXcV2gWxt9CNgf3DbzvswJsrX0O8Y95g9a4vHA0HQJ+heXdfH2YOrexCdPga+g6mmxuC8pTwbgqIkJ+uOj5foSyi5pA6OmhNTxnwpu7gEpY9xRsokrt51su2LJUhvwRhS8PqIGc8MwOJLlv1UIvdYi/mxk8SI8g9jHnh2bOxxbQAAAABJRU5ErkJggg==>
