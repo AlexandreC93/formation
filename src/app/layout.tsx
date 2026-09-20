@@ -25,7 +25,7 @@ export default function RootLayout({
           crossOrigin="anonymous"
         />
       </head>
-      <body className="antialiased">
+      <body className="antialiased overflow-x-hidden w-full max-w-full min-w-0">
         <ThemeProvider
           attribute="class"
           defaultTheme="system"

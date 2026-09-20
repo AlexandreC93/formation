@@ -39,7 +39,7 @@ export default async function DashboardLayout({
   };
 
   return (
-    <div className="flex flex-col md:flex-row h-screen bg-slate-50 dark:bg-slate-950 overflow-hidden">
+    <div className="flex flex-col md:flex-row h-screen bg-slate-50 dark:bg-slate-950 overflow-hidden w-full max-w-full min-w-0">
       {/* Navigation Mobile (affichée uniquement < md) */}
       <MobileNav {...sidebarProps} />
 
@@ -49,7 +49,7 @@ export default async function DashboardLayout({
       </div>
 
       {/* Contenu Principal */}
-      <main className="flex-1 overflow-y-auto">
+      <main className="flex-1 overflow-y-auto overflow-x-hidden min-w-0">
         {children}
       </main>
     </div>
