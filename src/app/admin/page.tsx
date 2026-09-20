@@ -22,8 +22,8 @@ import {
   ShieldCheck,
   Users,
   BookOpen,
-  Archive,
-} from 'lucide-react';
+import { Archive } from 'lucide-react';
+import { ThemeToggle } from '@/components/theme-toggle';
 
 export const dynamic = 'force-dynamic';
 
@@ -48,36 +48,39 @@ export default async function AdminPage() {
               <p className="text-slate-500 text-xs">Contrôle des sessions de formation</p>
             </div>
           </div>
-          <form action={adminLogoutAction}>
-            <button
-              type="submit"
-              className="flex items-center gap-2 px-4 py-2 rounded-xl text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5 border border-slate-200 dark:border-white/5 transition-all text-sm"
-            >
-              <LogOut className="w-4 h-4" />
-              Déconnexion
-            </button>
-          </form>
+            <div className="flex items-center gap-3">
+              <ThemeToggle />
+              <form action={adminLogoutAction}>
+                <button
+                  type="submit"
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-white/5 border border-slate-200 dark:border-white/5 transition-all text-sm"
+                >
+                  <LogOut className="w-4 h-4" />
+                  Déconnexion
+                </button>
+              </form>
+            </div>
         </div>
       </header>
 
       <div className="max-w-7xl mx-auto px-6 py-8 space-y-8">
         {/* Stats rapides */}
         <div className="grid grid-cols-3 gap-4">
-          <div className="bg-white dark:bg-white/3 border border-slate-200 dark:border-white/5 shadow-sm dark:shadow-none rounded-2xl p-5">
+          <div className="bg-white dark:bg-slate-800/50 border border-slate-200 dark:border-white/5 shadow-sm dark:shadow-none rounded-2xl p-5">
             <div className="flex items-center gap-3 mb-3">
               <Users className="w-5 h-5 text-indigo-500 dark:text-indigo-400" />
               <span className="text-slate-500 dark:text-slate-400 text-sm">Sessions actives</span>
             </div>
             <p className="text-3xl font-bold text-slate-900 dark:text-white">{sessions.length}</p>
           </div>
-          <div className="bg-white dark:bg-white/3 border border-slate-200 dark:border-white/5 shadow-sm dark:shadow-none rounded-2xl p-5">
+          <div className="bg-white dark:bg-slate-800/50 border border-slate-200 dark:border-white/5 shadow-sm dark:shadow-none rounded-2xl p-5">
             <div className="flex items-center gap-3 mb-3">
               <BookOpen className="w-5 h-5 text-emerald-500 dark:text-emerald-400" />
               <span className="text-slate-500 dark:text-slate-400 text-sm">Formations</span>
             </div>
             <p className="text-3xl font-bold text-slate-900 dark:text-white">{trainings.length}</p>
           </div>
-          <div className="bg-white dark:bg-white/3 border border-slate-200 dark:border-white/5 shadow-sm dark:shadow-none rounded-2xl p-5">
+          <div className="bg-white dark:bg-slate-800/50 border border-slate-200 dark:border-white/5 shadow-sm dark:shadow-none rounded-2xl p-5">
             <div className="flex items-center gap-3 mb-3">
               <CheckCircle className="w-5 h-5 text-amber-500 dark:text-amber-400" />
               <span className="text-slate-500 dark:text-slate-400 text-sm">Système prêt</span>
@@ -87,7 +90,7 @@ export default async function AdminPage() {
         </div>
 
         {/* Créer une nouvelle session */}
-        <div className="bg-white dark:bg-white/3 border border-slate-200 dark:border-white/5 shadow-sm dark:shadow-none rounded-2xl p-6">
+        <div className="bg-white dark:bg-slate-800/50 border border-slate-200 dark:border-white/5 shadow-sm dark:shadow-none rounded-2xl p-6">
           <h2 className="text-slate-900 dark:text-white font-semibold mb-4 flex items-center gap-2">
             <Plus className="w-4 h-4 text-indigo-500 dark:text-indigo-400" />
             Créer une nouvelle session
@@ -176,9 +179,9 @@ export default async function AdminPage() {
           const daysArray = Array.from({ length: trainingConfig.totalDays }, (_, i) => i + 1);
 
           return (
-            <div key={code} className="bg-white dark:bg-white/3 border border-slate-200 dark:border-white/5 shadow-sm dark:shadow-none rounded-2xl overflow-hidden">
+            <div key={code} className="bg-white dark:bg-slate-800/50 border border-slate-200 dark:border-white/5 shadow-sm dark:shadow-none rounded-2xl overflow-hidden">
               {/* En-tête session */}
-              <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-white/5 bg-slate-50 dark:bg-white/2">
+              <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-white/5 bg-slate-50 dark:bg-slate-900/50">
                 <div className="flex items-center gap-4">
                   <div>
                     <div className="flex items-center gap-2">
@@ -250,8 +253,8 @@ export default async function AdminPage() {
                                 isCurrent
                                   ? 'bg-indigo-50 dark:bg-indigo-500/10 border-indigo-200 dark:border-indigo-500/30'
                                   : isActive
-                                  ? 'bg-slate-50 dark:bg-white/3 border-slate-200 dark:border-white/10'
-                                  : 'bg-white dark:bg-white/1 border-slate-100 dark:border-white/5 opacity-60'
+                                  ? 'bg-slate-50 dark:bg-slate-800/80 border-slate-200 dark:border-white/10'
+                                  : 'bg-white dark:bg-slate-900/50 border-slate-100 dark:border-white/5 opacity-60'
                               }
                             `}
                           >
@@ -301,7 +304,7 @@ export default async function AdminPage() {
                                       ${
                                         solutionUnlocked
                                           ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20'
-                                          : 'bg-slate-50 dark:bg-white/3 text-slate-500 border-slate-200 dark:border-white/5 hover:bg-amber-50 dark:hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 hover:border-amber-300 dark:hover:border-amber-500/20'
+                                          : 'bg-slate-50 dark:bg-slate-800/80 text-slate-500 border-slate-200 dark:border-white/5 hover:bg-amber-50 dark:hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 hover:border-amber-300 dark:hover:border-amber-500/20'
                                       }
                                     `}
                                   >
