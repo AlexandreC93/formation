@@ -50,10 +50,10 @@ export const mdxComponents = {
       {children}
     </code>
   ),
-  // Conteneur du tableau : fluide et ajusté
+  // Wrapper isolé avec scroll tactile confiné
   table: ({ children, ...props }: React.HTMLAttributes<HTMLTableElement>) => (
-    <div className="my-4 w-full overflow-hidden rounded-lg border border-slate-200 dark:border-white/10 bg-slate-900/40">
-      <table className="w-full border-collapse text-left table-auto" {...props}>
+    <div className="my-6 w-full min-w-0 overflow-x-auto rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-slate-900/50 shadow-sm [-webkit-overflow-scrolling:touch]">
+      <table className="w-full text-left border-collapse table-auto" {...props}>
         {children}
       </table>
     </div>
@@ -61,21 +61,13 @@ export const mdxComponents = {
   thead: (props: React.HTMLAttributes<HTMLTableSectionElement>) => (
     <thead {...props} />
   ),
-  // En-têtes : texte très compact sur smartphone, normal sur PC
   th: ({ children, ...props }: React.ThHTMLAttributes<HTMLTableCellElement>) => (
-    <th className="bg-slate-100/90 dark:bg-white/5 border-b border-slate-200 dark:border-white/10 font-semibold text-slate-900 dark:text-slate-200 uppercase tracking-tight
-      px-2 py-1.5 text-[10px] leading-tight
-      sm:px-3 sm:py-2 sm:text-xs
-      md:px-4 md:py-2.5 md:text-sm" {...props}>
+    <th className="bg-slate-100/80 dark:bg-white/5 px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-700 dark:text-slate-300 border-b border-slate-200 dark:border-white/10 whitespace-nowrap" {...props}>
       {children}
     </th>
   ),
-  // Cellules : espacements et police réduits sur smartphone pour éviter le débordement
   td: ({ children, ...props }: React.TdHTMLAttributes<HTMLTableCellElement>) => (
-    <td className="border-b border-slate-100 dark:border-white/5 text-slate-800 dark:text-slate-300
-      px-2 py-1 text-[10.5px] leading-snug
-      sm:px-3 sm:py-2 sm:text-xs
-      md:px-4 md:py-2.5 md:text-sm" {...props}>
+    <td className="px-4 py-3 text-sm text-slate-800 dark:text-slate-300 border-b border-slate-100 dark:border-white/5 whitespace-nowrap" {...props}>
       {children}
     </td>
   ),

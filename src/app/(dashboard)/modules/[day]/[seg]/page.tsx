@@ -41,7 +41,7 @@ export default async function ModulePage({ params }: PageProps) {
   // 4. Contrôle d'accès strict côté serveur
   if (segment.index > session.active_segment) {
     return (
-      <div className="h-full flex items-center justify-center">
+      <div className="h-full flex items-center justify-center min-w-0">
         <LockedScreen segmentName={segment.title} />
       </div>
     );
@@ -73,7 +73,7 @@ export default async function ModulePage({ params }: PageProps) {
   const segmentTitle = (coursResult.frontmatter?.title as string) || segment.title;
 
   return (
-    <div className="h-full">
+    <div className="h-full min-w-0">
       <SegmentTabs
         coursResult={coursResult}
         tpResult={tpResult}

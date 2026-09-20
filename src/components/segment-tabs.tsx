@@ -51,7 +51,7 @@ export function SegmentTabs({
   const currentHasPdf = hasPdf[activeTab] && (activeTab !== 'corrige' || corrigeResult);
 
   return (
-    <div className="flex flex-col h-full relative">
+    <div className="flex flex-col h-full relative min-w-0">
       {/* En-tête (Titres) */}
       <div className="px-4 md:px-6 pt-6 pb-2">
         <h1 className="text-xl md:text-2xl font-bold text-slate-900 dark:text-white mb-1 leading-tight">{segmentTitle}</h1>
@@ -121,7 +121,7 @@ export function SegmentTabs({
       )}
 
       {/* Contenu de l'onglet */}
-      <div className="flex-1 overflow-y-auto px-4 md:px-6 py-6 pb-20 md:pb-6">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden min-w-0 px-4 md:px-6 py-6 pb-20 md:pb-6">
         {activeTab === 'cours' && (
           <div className="animate-fade-in">
             <RenderMdxOrError result={coursResult} />
