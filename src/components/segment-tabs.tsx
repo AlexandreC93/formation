@@ -54,12 +54,12 @@ export function SegmentTabs({
     <div className="flex flex-col h-full relative">
       {/* En-tête (Titres) */}
       <div className="px-4 md:px-6 pt-6 pb-2">
-        <h1 className="text-xl md:text-2xl font-bold text-white mb-1 leading-tight">{segmentTitle}</h1>
-        <p className="text-slate-500 text-xs md:text-sm mb-4">Formation Technique</p>
+        <h1 className="text-xl md:text-2xl font-bold text-slate-900 dark:text-white mb-1 leading-tight">{segmentTitle}</h1>
+        <p className="text-slate-500 dark:text-slate-400 text-xs md:text-sm mb-4">Formation Technique</p>
       </div>
 
       {/* Onglets - Sticky sur mobile */}
-      <div className="sticky top-0 z-20 px-4 md:px-6 pt-2 bg-slate-950/90 backdrop-blur-md border-b border-white/10">
+      <div className="sticky top-0 z-20 px-4 md:px-6 pt-2 bg-slate-50/90 dark:bg-slate-950/90 backdrop-blur-md border-b border-slate-200 dark:border-white/10">
         <div className="flex items-center justify-between gap-4">
           <div className="flex gap-1 overflow-x-auto hide-scrollbar w-full">
             {tabs.map(({ id, label, icon: Icon }) => (
@@ -70,8 +70,8 @@ export function SegmentTabs({
                   flex items-center justify-center gap-2 px-4 py-3 min-w-[100px] min-h-[44px] text-sm font-medium rounded-t-lg transition-all duration-200 relative whitespace-nowrap
                   ${
                     activeTab === id
-                      ? 'text-white bg-white/5 border-t border-l border-r border-white/10'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-white/3 border-b border-transparent'
+                      ? 'text-slate-900 bg-white border-t border-l border-r border-slate-200 shadow-sm z-10 -mb-[1px] dark:text-white dark:bg-white/5 dark:border-white/10 dark:shadow-none'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/50 border-b border-transparent dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-white/3'
                   }
                 `}
               >
@@ -109,7 +109,7 @@ export function SegmentTabs({
 
       {/* Bouton PDF mobile (sous les onglets si on est sur très petit écran) */}
       {currentHasPdf && (
-        <div className="sm:hidden px-4 py-3 border-b border-white/5 bg-slate-900/50">
+        <div className="sm:hidden px-4 py-3 border-b border-slate-200 dark:border-white/5 bg-slate-100/50 dark:bg-slate-900/50">
           <a
             href={`${pdfUrlBase}?type=${activeTab}`}
             className="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-lg bg-indigo-600/20 text-indigo-400 hover:bg-indigo-600/30 border border-indigo-500/30 transition-all text-sm font-semibold"
@@ -156,18 +156,18 @@ export function SegmentTabs({
               <div className="flex flex-col items-center justify-center py-16 md:py-20 text-center px-4">
                 <div className="relative mb-6">
                   <div className="absolute inset-0 bg-amber-500/10 rounded-full blur-2xl scale-150" />
-                  <div className="relative flex items-center justify-center w-20 h-20 bg-slate-800/80 border border-slate-700/60 rounded-2xl">
-                    <Lock className="w-9 h-9 text-amber-400/70" />
+                  <div className="relative flex items-center justify-center w-20 h-20 bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/60 rounded-2xl">
+                    <Lock className="w-9 h-9 text-amber-500 dark:text-amber-400/70" />
                   </div>
                 </div>
-                <h3 className="text-lg font-bold text-slate-200 mb-2">Correction non disponible</h3>
-                <p className="text-slate-400 text-sm max-w-xs leading-relaxed">
+                <h3 className="text-lg font-bold text-slate-800 dark:text-slate-200 mb-2">Correction non disponible</h3>
+                <p className="text-slate-500 dark:text-slate-400 text-sm max-w-xs leading-relaxed">
                   Le formateur n&apos;a pas encore partagé la correction de ce TP.{' '}
                   Elle sera débloquée à sa discrétion.
                 </p>
-                <div className="mt-6 flex items-center gap-2 bg-slate-800/60 border border-slate-700/40 rounded-full px-4 py-2">
-                  <div className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-                  <span className="text-slate-400 text-xs">En attente de déblocage</span>
+                <div className="mt-6 flex items-center gap-2 bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/40 rounded-full px-4 py-2">
+                  <div className="w-2 h-2 rounded-full bg-amber-500 dark:bg-amber-400 animate-pulse" />
+                  <span className="text-slate-600 dark:text-slate-400 text-xs">En attente de déblocage</span>
                 </div>
               </div>
             )}

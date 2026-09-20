@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import { ThemeProvider } from '@/components/theme-provider';
 
 export const metadata: Metadata = {
   title: 'Plateforme de Formation Technique',
@@ -14,7 +15,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="fr" className="dark">
+    <html lang="fr" suppressHydrationWarning>
       <head>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -24,7 +25,16 @@ export default function RootLayout({
           crossOrigin="anonymous"
         />
       </head>
-      <body className="antialiased">{children}</body>
+      <body className="antialiased">
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="system"
+          enableSystem
+          disableTransitionOnChange
+        >
+          {children}
+        </ThemeProvider>
+      </body>
     </html>
   );
 }

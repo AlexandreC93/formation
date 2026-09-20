@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { logoutAction } from '@/app/actions/auth';
 import { Lock, Unlock, ChevronDown, ChevronRight, GraduationCap, LogOut, Download, Menu, X } from 'lucide-react';
+import { ThemeToggle } from './theme-toggle';
 import type { Segment, TrainingConfig } from '@/lib/trainings';
 
 interface SessionStatus {
@@ -87,15 +88,15 @@ export function MobileNav({
   return (
     <>
       {/* Barre d'en-tête mobile */}
-      <header className="md:hidden flex items-center justify-between px-4 h-14 bg-slate-950/90 backdrop-blur border-b border-white/5 sticky top-0 z-40">
+      <header className="md:hidden flex items-center justify-between px-4 h-14 bg-white/90 dark:bg-slate-950/90 backdrop-blur border-b border-slate-200 dark:border-white/5 sticky top-0 z-40">
         <div className="flex items-center gap-3">
-          <div className="flex items-center justify-center w-8 h-8 bg-indigo-600/20 border border-indigo-500/30 rounded-lg">
-            <GraduationCap className="w-4 h-4 text-indigo-400" />
+          <div className="flex items-center justify-center w-8 h-8 bg-indigo-600/10 border border-indigo-500/20 dark:bg-indigo-600/20 dark:border-indigo-500/30 rounded-lg">
+            <GraduationCap className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
           </div>
           <div className="flex flex-col">
-            <span className="text-white text-xs font-semibold truncate max-w-[150px]">{trainingConfig.title}</span>
+            <span className="text-slate-900 dark:text-white text-xs font-semibold truncate max-w-[150px]">{trainingConfig.title}</span>
             {activeSegmentDetails && (
-              <span className="text-slate-400 text-[10px]">
+              <span className="text-slate-500 dark:text-slate-400 text-[10px]">
                 Actif : J{activeSegmentDetails.day}-S{activeSegmentDetails.seg}
               </span>
             )}
@@ -103,7 +104,7 @@ export function MobileNav({
         </div>
         <button
           onClick={() => setIsOpen(true)}
-          className="p-2 -mr-2 text-slate-400 hover:text-white transition-colors"
+          className="p-2 -mr-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors"
           aria-label="Ouvrir le menu"
         >
           <Menu className="w-6 h-6" />
@@ -115,22 +116,22 @@ export function MobileNav({
         <div className="fixed inset-0 z-50 flex md:hidden">
           {/* Backdrop (cliquable pour fermer) */}
           <div 
-            className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm transition-opacity" 
+            className="absolute inset-0 bg-slate-900/40 dark:bg-slate-950/80 backdrop-blur-sm transition-opacity" 
             onClick={() => setIsOpen(false)}
             aria-hidden="true"
           />
 
           {/* Tiroir */}
-          <div className="relative w-4/5 max-w-sm flex flex-col h-full bg-slate-950 border-r border-white/5 shadow-2xl animate-in slide-in-from-left duration-300">
+          <div className="relative w-4/5 max-w-sm flex flex-col h-full bg-slate-50 dark:bg-slate-950 border-r border-slate-200 dark:border-white/5 shadow-2xl animate-in slide-in-from-left duration-300">
             {/* Header du tiroir */}
-            <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-white/5">
               <div>
-                <p className="text-white text-sm font-semibold leading-tight truncate">{sessionName}</p>
+                <p className="text-slate-900 dark:text-white text-sm font-semibold leading-tight truncate">{sessionName}</p>
                 <p className="text-slate-500 text-xs">Navigation des modules</p>
               </div>
               <button
                 onClick={() => setIsOpen(false)}
-                className="p-2 -mr-2 text-slate-400 hover:text-white transition-colors"
+                className="p-2 -mr-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors"
                 aria-label="Fermer le menu"
               >
                 <X className="w-5 h-5" />
@@ -148,21 +149,21 @@ export function MobileNav({
                   <div key={day}>
                     <button
                       onClick={() => toggleDay(day)}
-                      className="w-full flex items-center justify-between px-3 py-3 rounded-lg hover:bg-white/5 transition-colors text-left"
+                      className="w-full flex items-center justify-between px-3 py-3 rounded-lg hover:bg-slate-200/50 dark:hover:bg-white/5 transition-colors text-left"
                     >
                       <div className="flex items-center gap-2">
                         <span
                           className={`text-xs font-bold px-2 py-0.5 rounded-md ${
                             hasAccessible
-                              ? 'bg-indigo-500/15 text-indigo-400'
-                              : 'bg-slate-800 text-slate-600'
+                              ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-400'
+                              : 'bg-slate-200 text-slate-500 dark:bg-slate-800 dark:text-slate-600'
                           }`}
                         >
                           J{day}
                         </span>
                         <span
                           className={`text-sm font-medium truncate ${
-                            hasAccessible ? 'text-slate-300' : 'text-slate-600'
+                            hasAccessible ? 'text-slate-700 dark:text-slate-300' : 'text-slate-400 dark:text-slate-600'
                           }`}
                         >
                           Jour {day}
@@ -189,20 +190,20 @@ export function MobileNav({
                                 flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all duration-200
                                 ${
                                   isCurrent
-                                    ? 'bg-indigo-600/20 border border-indigo-500/30 text-white'
+                                    ? 'bg-indigo-600/10 border-indigo-500/20 text-indigo-700 dark:bg-indigo-600/20 border border-transparent dark:border-indigo-500/30 dark:text-white'
                                     : isLocked
-                                    ? 'text-slate-600 cursor-default pointer-events-none'
-                                    : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
+                                    ? 'text-slate-400 dark:text-slate-600 cursor-default pointer-events-none'
+                                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-200/50 dark:hover:bg-white/5'
                                 }
                               `}
                               aria-disabled={isLocked}
                             >
                               {isLocked ? (
-                                <Lock className="w-4 h-4 text-slate-700 flex-shrink-0" />
+                                <Lock className="w-4 h-4 text-slate-400 dark:text-slate-700 flex-shrink-0" />
                               ) : (
                                 <Unlock className="w-4 h-4 text-indigo-500 flex-shrink-0" />
                               )}
-                              <span className="font-medium flex-shrink-0 text-slate-500">S{segment.seg}</span>
+                              <span className="font-medium flex-shrink-0 text-slate-500 dark:text-slate-500">S{segment.seg}</span>
                               <span className="truncate">{segment.title}</span>
                             </Link>
                           );
@@ -215,16 +216,17 @@ export function MobileNav({
             </nav>
 
             {/* Pied du tiroir */}
-            <div className="p-4 border-t border-white/5 space-y-3 pb-8">
+            <div className="p-4 border-t border-slate-200 dark:border-white/5 space-y-3 pb-8">
               {allowArchiveDownload && (
                 <a
                   href="/api/session/download-archive"
-                  className="w-full flex items-center justify-center gap-2 px-3 py-3 rounded-lg bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30 transition-all text-sm border border-emerald-500/30"
+                  className="w-full flex items-center justify-center gap-2 px-3 py-3 rounded-lg bg-emerald-600/10 text-emerald-600 dark:bg-emerald-600/20 dark:text-emerald-400 hover:bg-emerald-600/20 dark:hover:bg-emerald-600/30 transition-all text-sm border border-emerald-500/20 dark:border-emerald-500/30"
                 >
                   <Download className="w-4 h-4" />
                   Télécharger (ZIP)
                 </a>
               )}
+              <ThemeToggle />
               <form action={logoutAction}>
                 <button
                   type="submit"

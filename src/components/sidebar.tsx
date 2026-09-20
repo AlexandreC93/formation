@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { logoutAction } from '@/app/actions/auth';
 import { Lock, Unlock, ChevronDown, ChevronRight, GraduationCap, LogOut, Download } from 'lucide-react';
+import { ThemeToggle } from './theme-toggle';
 import type { Segment, TrainingConfig } from '@/lib/trainings';
 
 interface SessionStatus {
@@ -76,15 +77,15 @@ export function Sidebar({
   const DAYS = Array.from({ length: trainingConfig.totalDays }, (_, i) => i + 1);
 
   return (
-    <aside className="flex flex-col w-72 h-screen bg-slate-950/80 border-r border-white/5 overflow-y-auto flex-shrink-0">
+    <aside className="flex flex-col w-72 h-screen bg-slate-100/80 dark:bg-slate-950/80 border-r border-slate-200 dark:border-white/5 overflow-y-auto flex-shrink-0">
       {/* Logo / Titre */}
-      <div className="p-5 border-b border-white/5">
+      <div className="p-5 border-b border-slate-200 dark:border-white/5">
         <div className="flex items-center gap-3">
           <div className="flex items-center justify-center w-9 h-9 bg-indigo-600/20 border border-indigo-500/30 rounded-xl">
             <GraduationCap className="w-5 h-5 text-indigo-400" />
           </div>
           <div>
-            <p className="text-white text-sm font-semibold leading-tight truncate max-w-[160px]">{trainingConfig.title}</p>
+            <p className="text-slate-900 dark:text-white text-sm font-semibold leading-tight truncate max-w-[160px]">{trainingConfig.title}</p>
             <p className="text-slate-500 text-xs truncate max-w-[160px]">{sessionName}</p>
           </div>
         </div>
@@ -101,21 +102,21 @@ export function Sidebar({
             <div key={day}>
               <button
                 onClick={() => toggleDay(day)}
-                className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg hover:bg-white/5 transition-colors text-left"
+                className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg hover:bg-slate-200/50 dark:hover:bg-white/5 transition-colors text-left"
               >
                 <div className="flex items-center gap-2">
                   <span
                     className={`text-xs font-bold px-2 py-0.5 rounded-md ${
                       hasAccessible
-                        ? 'bg-indigo-500/15 text-indigo-400'
-                        : 'bg-slate-800 text-slate-600'
+                        ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-400'
+                        : 'bg-slate-200 text-slate-500 dark:bg-slate-800 dark:text-slate-600'
                     }`}
                   >
                     J{day}
                   </span>
                   <span
                     className={`text-xs font-medium truncate max-w-[150px] ${
-                      hasAccessible ? 'text-slate-300' : 'text-slate-600'
+                      hasAccessible ? 'text-slate-700 dark:text-slate-300' : 'text-slate-400 dark:text-slate-600'
                     }`}
                   >
                     Jour {day}
@@ -142,20 +143,20 @@ export function Sidebar({
                           flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs transition-all duration-200
                           ${
                             isCurrent
-                              ? 'bg-indigo-600/20 border border-indigo-500/30 text-white'
+                              ? 'bg-indigo-600/10 border-indigo-500/20 text-indigo-700 dark:bg-indigo-600/20 border border-transparent dark:border-indigo-500/30 dark:text-white'
                               : isLocked
-                              ? 'text-slate-600 cursor-default pointer-events-none'
-                              : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
+                              ? 'text-slate-400 dark:text-slate-600 cursor-default pointer-events-none'
+                              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-200/50 dark:hover:bg-white/5'
                           }
                         `}
                         aria-disabled={isLocked}
                       >
                         {isLocked ? (
-                          <Lock className="w-3 h-3 text-slate-700 flex-shrink-0" />
+                          <Lock className="w-3 h-3 text-slate-400 dark:text-slate-700 flex-shrink-0" />
                         ) : (
                           <Unlock className="w-3 h-3 text-indigo-500 flex-shrink-0" />
                         )}
-                        <span className="font-medium flex-shrink-0 text-slate-500">S{segment.seg}</span>
+                        <span className="font-medium flex-shrink-0 text-slate-500 dark:text-slate-500">S{segment.seg}</span>
                         <span className="truncate">{segment.title}</span>
                       </Link>
                     );
@@ -168,16 +169,17 @@ export function Sidebar({
       </nav>
 
       {/* Pied de sidebar */}
-      <div className="p-3 border-t border-white/5 space-y-2">
+      <div className="p-3 border-t border-slate-200 dark:border-white/5 space-y-2">
         {allowArchiveDownload && (
           <a
             href="/api/session/download-archive"
-            className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-emerald-600/20 text-emerald-400 hover:bg-emerald-600/30 transition-all text-xs border border-emerald-500/30"
+            className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-emerald-600/10 text-emerald-600 dark:bg-emerald-600/20 dark:text-emerald-400 hover:bg-emerald-600/20 dark:hover:bg-emerald-600/30 transition-all text-xs border border-emerald-500/20 dark:border-emerald-500/30"
           >
             <Download className="w-3.5 h-3.5" />
             Télécharger les supports (ZIP)
           </a>
         )}
+        <ThemeToggle />
         <form action={logoutAction}>
           <button
             type="submit"

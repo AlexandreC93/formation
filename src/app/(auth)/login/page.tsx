@@ -13,7 +13,7 @@ export default function LoginPage() {
   );
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-slate-50 dark:bg-gradient-to-br dark:from-slate-950 dark:via-slate-900 dark:to-indigo-950 flex items-center justify-center p-4">
       {/* Grid de fond */}
       <div
         className="absolute inset-0 opacity-[0.03]"
@@ -27,22 +27,22 @@ export default function LoginPage() {
       <div className="relative w-full max-w-md">
         {/* Badge entité */}
         <div className="flex justify-center mb-8">
-          <div className="flex items-center gap-2 bg-indigo-500/10 border border-indigo-500/30 rounded-full px-4 py-2">
+          <div className="flex items-center gap-2 bg-indigo-600/10 border border-indigo-500/20 dark:bg-indigo-500/10 dark:border-indigo-500/30 rounded-full px-4 py-2">
             <Shield className="w-4 h-4 text-indigo-400" />
-            <span className="text-indigo-300 text-sm font-medium tracking-wide">
+            <span className="text-indigo-600 dark:text-indigo-300 text-sm font-medium tracking-wide">
               Plateforme Formation Sécurisée
             </span>
           </div>
         </div>
 
         {/* Card principale */}
-        <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-8 shadow-2xl">
+        <div className="bg-white dark:bg-white/5 backdrop-blur-xl border border-slate-200 dark:border-white/10 rounded-2xl p-8 shadow-xl dark:shadow-2xl">
           <div className="text-center mb-8">
             <div className="inline-flex items-center justify-center w-16 h-16 bg-indigo-600/20 rounded-2xl mb-4 border border-indigo-500/30">
               <KeyRound className="w-8 h-8 text-indigo-400" />
             </div>
-            <h1 className="text-2xl font-bold text-white mb-2">Accès Stagiaire</h1>
-            <p className="text-slate-400 text-sm">
+            <h1 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">Accès Stagiaire</h1>
+            <p className="text-slate-600 dark:text-slate-400 text-sm">
               Saisissez le code de session fourni par votre formateur
             </p>
           </div>
@@ -51,7 +51,7 @@ export default function LoginPage() {
             <div>
               <label
                 htmlFor="code"
-                className="block text-sm font-medium text-slate-300 mb-2"
+                className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2"
               >
                 Code de session
               </label>
@@ -64,7 +64,7 @@ export default function LoginPage() {
                 autoCorrect="off"
                 autoCapitalize="characters"
                 spellCheck={false}
-                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-slate-500 font-mono text-sm uppercase tracking-widest focus:outline-none focus:ring-2 focus:ring-indigo-500/60 focus:border-indigo-500/60 transition-all"
+                className="w-full bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-xl px-4 py-3 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 font-mono text-sm uppercase tracking-widest focus:outline-none focus:ring-2 focus:ring-indigo-500/60 focus:border-indigo-500/60 transition-all"
               />
             </div>
 
