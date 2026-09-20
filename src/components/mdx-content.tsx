@@ -50,20 +50,34 @@ export const mdxComponents = {
       {children}
     </code>
   ),
-  // Tableaux
-  table: (props: React.HTMLAttributes<HTMLTableElement>) => (
-    <div className="my-6 w-full max-w-full overflow-x-auto rounded-xl border border-slate-200 dark:border-white/10 bg-white/50 dark:bg-slate-900/40 shadow-sm [-webkit-overflow-scrolling:touch]">
-      <table className="w-full text-left border-collapse table-auto not-prose" {...props} />
+  // Conteneur du tableau : fluide et ajusté
+  table: ({ children, ...props }: React.HTMLAttributes<HTMLTableElement>) => (
+    <div className="my-4 w-full overflow-hidden rounded-lg border border-slate-200 dark:border-white/10 bg-slate-900/40">
+      <table className="w-full border-collapse text-left table-auto" {...props}>
+        {children}
+      </table>
     </div>
   ),
   thead: (props: React.HTMLAttributes<HTMLTableSectionElement>) => (
     <thead {...props} />
   ),
-  th: (props: React.ThHTMLAttributes<HTMLTableCellElement>) => (
-    <th className="text-[11px] sm:text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 bg-slate-100/80 dark:bg-white/5 px-2.5 py-2 sm:px-4 sm:py-3 whitespace-nowrap border-b border-slate-200 dark:border-white/10" {...props} />
+  // En-têtes : texte très compact sur smartphone, normal sur PC
+  th: ({ children, ...props }: React.ThHTMLAttributes<HTMLTableCellElement>) => (
+    <th className="bg-slate-100/90 dark:bg-white/5 border-b border-slate-200 dark:border-white/10 font-semibold text-slate-900 dark:text-slate-200 uppercase tracking-tight
+      px-2 py-1.5 text-[10px] leading-tight
+      sm:px-3 sm:py-2 sm:text-xs
+      md:px-4 md:py-2.5 md:text-sm" {...props}>
+      {children}
+    </th>
   ),
-  td: (props: React.TdHTMLAttributes<HTMLTableCellElement>) => (
-    <td className="text-xs sm:text-sm text-slate-800 dark:text-slate-300 px-2.5 py-2 sm:px-4 sm:py-3 border-b border-slate-100 dark:border-white/5 [&_code]:font-mono [&_code]:text-[11px] sm:[&_code]:text-xs [&_code]:bg-slate-100 dark:[&_code]:bg-slate-800 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:whitespace-nowrap [&_code]:border-0" {...props} />
+  // Cellules : espacements et police réduits sur smartphone pour éviter le débordement
+  td: ({ children, ...props }: React.TdHTMLAttributes<HTMLTableCellElement>) => (
+    <td className="border-b border-slate-100 dark:border-white/5 text-slate-800 dark:text-slate-300
+      px-2 py-1 text-[10.5px] leading-snug
+      sm:px-3 sm:py-2 sm:text-xs
+      md:px-4 md:py-2.5 md:text-sm" {...props}>
+      {children}
+    </td>
   ),
   tr: (props: React.HTMLAttributes<HTMLTableRowElement>) => (
     <tr className="hover:bg-slate-50 dark:hover:bg-white/3 transition-colors" {...props} />
