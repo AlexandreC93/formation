@@ -50,24 +50,26 @@ export const mdxComponents = {
       {children}
     </code>
   ),
-  // Wrapper isolé avec scroll tactile confiné
-  table: ({ children, ...props }: React.HTMLAttributes<HTMLTableElement>) => (
-    <div className="my-6 w-full min-w-0 overflow-x-auto rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-slate-900/50 shadow-sm [-webkit-overflow-scrolling:touch]">
-      <table className="w-full text-left border-collapse table-auto" {...props}>
+  // Le conteneur DIV porte le scroll (overflow-x-auto)
+  table: ({ children }: React.HTMLAttributes<HTMLTableElement>) => (
+    <div className="my-6 w-full max-w-full overflow-x-auto rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-slate-900/50 shadow-sm [scrollbar-width:thin]">
+      <table className="w-max min-w-full border-collapse text-left">
         {children}
       </table>
     </div>
   ),
-  thead: (props: React.HTMLAttributes<HTMLTableSectionElement>) => (
-    <thead {...props} />
+  thead: ({ children }: React.HTMLAttributes<HTMLTableSectionElement>) => (
+    <thead className="bg-slate-100/90 dark:bg-white/5 border-b border-slate-200 dark:border-white/10">
+      {children}
+    </thead>
   ),
-  th: ({ children, ...props }: React.ThHTMLAttributes<HTMLTableCellElement>) => (
-    <th className="bg-slate-100/80 dark:bg-white/5 px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-700 dark:text-slate-300 border-b border-slate-200 dark:border-white/10 whitespace-nowrap" {...props}>
+  th: ({ children }: React.ThHTMLAttributes<HTMLTableCellElement>) => (
+    <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-slate-700 dark:text-slate-300 whitespace-nowrap">
       {children}
     </th>
   ),
-  td: ({ children, ...props }: React.TdHTMLAttributes<HTMLTableCellElement>) => (
-    <td className="px-4 py-3 text-sm text-slate-800 dark:text-slate-300 border-b border-slate-100 dark:border-white/5 whitespace-nowrap" {...props}>
+  td: ({ children }: React.TdHTMLAttributes<HTMLTableCellElement>) => (
+    <td className="px-4 py-3 text-sm text-slate-800 dark:text-slate-300 border-b border-slate-100 dark:border-white/5 whitespace-nowrap">
       {children}
     </td>
   ),
