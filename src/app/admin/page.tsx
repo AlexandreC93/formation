@@ -22,7 +22,8 @@ import {
   ShieldCheck,
   Users,
   BookOpen,
-import { Archive } from 'lucide-react';
+  Archive,
+} from 'lucide-react';
 import { ThemeToggle } from '@/components/theme-toggle';
 
 export const dynamic = 'force-dynamic';
