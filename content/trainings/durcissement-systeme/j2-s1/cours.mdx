@@ -1,113 +1,126 @@
----
-title: Modèle TCP/IP & Outils Réseau
----
+# **Durcissement Linux \- Accès, Privilèges et Système de Fichiers**
 
-# Modèle TCP/IP & Outils Réseau
+**Objectifs :**
 
-## Le modèle TCP/IP en couches
+* Comprendre la philosophie de gestion des droits sous Linux (Tout est fichier).  
+* Sécuriser drastiquement le service d'accès à distance (OpenSSH) selon l'ANSSI.  
+* Maîtriser la délégation de privilèges via sudo et éviter les erreurs de configuration.  
+* Appliquer le principe du moindre privilège par défaut via l'Umask.  
+* Identifier et neutraliser les risques liés aux binaires SUID/SGID.
 
-| Couche | Protocoles | Unité |
-|---|---|---|
-| Application | HTTP, HTTPS, SSH, DNS, SMTP | Message |
-| Transport | TCP, UDP | Segment / Datagramme |
-| Internet | IP, ICMP, ARP | Paquet |
-| Accès réseau | Ethernet, Wi-Fi, PPP | Trame |
+## **1\. La Philosophie de Sécurité Linux**
 
-## Configuration réseau (ip command)
+Contrairement à Windows qui s'appuie sur une base de registre centralisée et des objets complexes (GPO, SAM), Linux repose sur un principe fondateur simple : **"Tout est fichier"**.
 
-```bash
-# Interfaces réseau
-ip link show
-ip addr show
-ip addr show dev eth0
+* La configuration d'un service est un fichier texte (ex: /etc/ssh/sshd\_config).  
+* Les mots de passe sont dans un fichier texte (/etc/shadow).  
+* Les périphériques matériels (disques) sont représentés par des fichiers (/dev/sda).
 
-# Ajouter une adresse IP
-ip addr add 192.168.1.100/24 dev eth0
-ip addr del 192.168.1.100/24 dev eth0
+**Conséquence pour le durcissement :** La sécurité d'un système Linux repose à 90% sur la gestion stricte des droits de lecture, d'écriture et d'exécution appliqués sur ces fichiers. Si les droits sont mal gérés, le système s'effondre.
 
-# Activer/Désactiver une interface
-ip link set eth0 up
-ip link set eth0 down
+## **2\. Verrouillage des Accès Distants (OpenSSH)**
 
-# Table de routage
-ip route show
-ip route add default via 192.168.1.1
-ip route add 10.0.0.0/8 via 192.168.1.254
-ip route del 10.0.0.0/8
+Le service SSH (sshd) est la porte d'entrée principale des administrateurs, mais aussi des attaquants. Sa configuration par défaut est souvent trop permissive. Le fichier maître à modifier est /etc/ssh/sshd\_config.
 
-# Voisinage ARP
-ip neigh show
-ip neigh flush all
-```
+### **2.1 Interdire l'accès direct au super-administrateur (root)**
 
-## Diagnostic réseau
+L'ANSSI interdit formellement de se connecter directement en tant que root via le réseau. Un attaquant ne devrait jamais pouvoir lancer une attaque par force brute sur le compte suprême.
 
-```bash
-# Test de connectivité
-ping -c 4 -I eth0 8.8.8.8
+* **Paramètre à modifier :** PermitRootLogin no  
+* **La bonne pratique :** On se connecte avec un compte standard nominatif (ex: gregory), puis on élève ses privilèges temporairement via la commande sudo.
 
-# Tracé de route
-traceroute -n 8.8.8.8
-mtr --report --report-cycles=10 8.8.8.8
+### **2.2 Bannir les mots de passe au profit des clés cryptographiques**
 
-# Résolution DNS
-dig +short google.com
-dig @8.8.8.8 google.com A
-dig google.com MX
-nslookup google.com
-host -v google.com
+Les mots de passe peuvent être devinés, volés ou interceptés. L'authentification par clé publique/privée (RSA 4096 bits ou ED25519) est insensible au *brute-force*.
 
-# Connexions actives
-ss -tulnp                    # Sockets en écoute
-ss -tnp state established    # Connexions établies
-ss -s                        # Résumé des sockets
+* **Paramètres à modifier :**  
+  * PasswordAuthentication no  
+  * PubkeyAuthentication yes
 
-# Capture de trafic
-tcpdump -i eth0 -n -c 100
-tcpdump -i eth0 'port 443' -w /tmp/capture.pcap
-tcpdump -r /tmp/capture.pcap -n
-```
+### **2.3 Restreindre les utilisateurs autorisés**
 
-## Analyse avec nmap
+Plutôt que de laisser n'importe quel compte système tenter de se connecter, on définit une "liste blanche" stricte.
 
-```bash
-# Découverte d'hôtes
-nmap -sn 192.168.1.0/24           # Ping sweep (aucun port)
-nmap -sn 192.168.1.0/24 -oG -    # Format greppable
+* **Paramètre à ajouter :** AllowUsers gregory mouloud admin-sys  
+* **Alternative par groupe :** AllowGroups ssh-users
 
-# Scan de ports
-nmap -sS 192.168.1.10             # SYN scan (furtif)
-nmap -sT 192.168.1.10             # TCP connect (sans root)
-nmap -sU -p 53,161,500 192.168.1.10  # UDP scan
-nmap -p 1-1024 192.168.1.10       # Ports 1-1024
-nmap -p- 192.168.1.10             # Tous les ports
+*Rappel : Après toute modification du fichier de configuration, il faut recharger le service avec sudo systemctl restart sshd.*
 
-# Détection de version et OS
-nmap -sV -O 192.168.1.10
-nmap -A 192.168.1.10              # Agressif (OS + versions + scripts)
+## **3\. Gestion et Délégation des Privilèges (sudo)**
 
-# Scripts NSE
-nmap --script=ssl-cert 192.168.1.10 -p 443
-nmap --script=http-title 192.168.1.0/24 -p 80,443
-nmap --script=vuln 192.168.1.10
-```
+Sous Linux, l'utilisateur root a un pouvoir absolu de vie ou de mort sur le système. Utiliser root au quotidien est une aberration sécuritaire.
 
-## Netcat (nc) — le couteau suisse réseau
+### **3.1 Le rôle de Sudo**
 
-```bash
-# Scanner des ports
-nc -zv 192.168.1.10 80
-nc -zv 192.168.1.10 20-25
+sudo (SuperUser DO) permet à un utilisateur standard d'exécuter une commande spécifique avec les droits d'un autre utilisateur (généralement root), sous réserve que l'administrateur l'y ait autorisé dans le fichier /etc/sudoers.
 
-# Écoute sur un port
-nc -lvnp 4444
+### **3.2 Utiliser visudo**
 
-# Transfert de fichier
-# Côté récepteur :
-nc -lvp 9999 > fichier_recu.tar.gz
-# Côté émetteur :
-tar czf - /data/ | nc 192.168.1.5 9999
+On ne modifie **jamais** le fichier /etc/sudoers avec un éditeur classique (comme nano ou vim). En cas d'erreur de syntaxe, le fichier est corrompu et plus personne ne peut devenir administrateur.
 
-# Test HTTP basique
-echo -e "GET / HTTP/1.0\r\nHost: example.com\r\n\r\n" | nc example.com 80
-```
+* **L'outil obligatoire :** La commande sudo visudo. Elle ouvre le fichier, permet de l'éditer, et **vérifie la syntaxe** avant de sauvegarder.
+
+### **3.3 Configurer des droits granulaires**
+
+Dans /etc/sudoers, on peut donner les pleins pouvoirs à un groupe d'administrateurs (ex: le groupe wheel ou sudo) :
+
+* %sudo ALL=(ALL:ALL) ALL
+
+Mais on peut aussi restreindre un utilisateur métier à une seule commande, sans lui demander de mot de passe (pratique pour l'audit ou les scripts) :
+
+* auditscan ALL=(ALL) NOPASSWD: /usr/bin/apt-get changelog \*
+
+## 
+
+## 
+
+## **4\. Système de Fichiers : L'Umask (Recommandation ANSSI)**
+
+Lorsqu'un utilisateur ou un service créé un nouveau fichier ou dossier, Linux lui attribue des droits par défaut. L'Umask est le masque mathématique qui vient **soustraire** des droits à cette création.
+
+* Droits maximums d'un dossier : 777 (rwx pour tout le monde)  
+* Droits maximums d'un fichier : 666 (rw- pour tout le monde, pas d'exécution)
+
+### **4.1 L'Umask par défaut vs L'Umask ANSSI**
+
+Par défaut, beaucoup de distributions utilisent un Umask de 022\.
+
+* *Résultat :* 777 \- 022 \= 755 pour les dossiers. Tout le monde peut lire le contenu \!
+
+L'ANSSI exige un Umask de **027** pour garantir le cloisonnement et le moindre privilège.
+
+* *Le calcul avec 027 :* 777 \- 027 \= **750**  
+* *Résultat métier :* Le propriétaire a tous les droits (7), son groupe a lecture/exécution (5), et le reste du monde n'a **aucun droit** (0).
+
+### **4.2 Comment l'appliquer ?**
+
+Pour qu'il s'applique à tous les utilisateurs du système, on modifie le fichier de configuration globale : /etc/login.defs (paramètre UMASK 027).
+
+## **5\. Les Binaires SUID / SGID**
+
+C'est l'un des points d'audit les plus critiques sous Linux.
+
+### **5.1 Qu'est-ce que le bit SUID ?**
+
+Normalement, quand vous lancez un programme, il s'exécute avec **vos** droits.
+
+Le bit **SUID** (Set-user Identification) modifie cette règle : le programme s'exécute avec les droits du **propriétaire du fichier**.
+
+*Exemple légitime :* La commande /usr/bin/passwd appartient à root et possède le bit SUID. Quand un utilisateur standard la lance, le programme tourne temporairement en tant que root, ce qui permet à l'utilisateur de modifier son mot de passe dans le fichier hyper-protégé /etc/shadow.
+
+### **5.2 L'exploitation par les attaquants (GTFOBins)**
+
+Si un administrateur configure par erreur le bit SUID sur un outil classique (ex: find, vim, python, bash) pour faciliter une tâche, un attaquant va l'utiliser pour ouvrir un terminal en tant que root. C'est l'élévation de privilèges instantanée.
+
+### 
+
+### 
+
+### **5.3 L'audit continu**
+
+L'administrateur doit vérifier régulièrement qu'aucun binaire illégitime ne possède ce bit SUID.
+
+* **Commande de recherche des fichiers SUID :**  
+  find / \-perm \-4000 \-type f \-exec ls \-la {} \+ 2\>/dev/null
+
+  *Si l'audit remonte des exécutables suspects, il faut retirer le bit SUID immédiatement avec chmod u-s /chemin/vers/fichier.*

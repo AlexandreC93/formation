@@ -1,38 +1,164 @@
----
-title: TP — Diagnostic et analyse réseau
----
+# **Durcissement Fondamental Linux**&nbsp;
 
-# TP — Diagnostic et analyse réseau
+## **Objectifs**&nbsp;
 
-## Objectifs
-- Analyser la configuration réseau d'un système
-- Utiliser les outils de diagnostic réseau
-- Capturer et analyser du trafic
+1. Sécuriser le service OpenSSH selon les recommandations du référentiel ANSSI.  
+2. Forcer le principe du moindre privilège à la création de fichiers et répertoires via l'Umask 027\.  
+3. Réaliser l'inventaire et la remédiation des binaires à privilèges SUID (vecteurs GTFOBins).  
+4. Assainir et sécuriser la configuration de la délégation de privilèges sudo.  
+5. Appliquer les premiers paramètres de durcissement du noyau (sysctl) identifiés lors de l'audit Lynis.
 
-## Durée estimée : 45 minutes
+## **Verrouillage du service d'accès distant (OpenSSH)**
 
-## Exercice 1 — Inventaire réseau
+Le protocole SSH est la cible numéro un des attaques par force brute et credential stuffing. La configuration par défaut de la plupart des distributions autorise des comportements jugés inacceptables par l'ANSSI.
 
-1. Cartographiez la configuration réseau complète : interfaces, IPs, routes, DNS
-2. Identifiez tous les ports en écoute avec le processus associé
-3. Listez toutes les connexions TCP établies, groupées par application
+### **1.1 Désactivation du compte root direct**
 
-## Exercice 2 — Analyse DNS
+1. Ouvrez le fichier de configuration principal d'OpenSSH :  
+   sudo nano /etc/ssh/sshd\_config
 
-1. Résolvez `mail.example.com` en cherchant successivement les enregistrements A, MX, TXT, SPF
-2. Effectuez une résolution inverse (PTR) sur votre IP publique
-3. Déterminez le serveur DNS autoritaire du domaine `example.com`
+2. Repérez la directive PermitRootLogin (supprimez le \# initial si la ligne est commentée) et appliquez la valeur stricte :  
+   PermitRootLogin no
 
-## Exercice 3 — Capture de trafic
+3. Ajoutez une restriction explicite sur les comptes autorisés à se connecter en fin de fichier :  
+   AllowUsers formation
 
-1. Capturez 60 secondes de trafic sur votre interface principale, filtrez uniquement TCP port 443
-2. Identifiez les 5 IP distantes les plus actives dans la capture
-3. Détectez les tentatives de connexion refusées (RST) dans la capture
+4. Sauvegardez (Ctrl \+ O, Entrée) et quittez (Ctrl \+ X).
 
-## Exercice 4 — Scan réseau
+### **1.2 Test de syntaxe et redémarrage du service**
 
-1. Effectuez un ping sweep sur votre sous-réseau local
-2. Pour chaque hôte découvert, listez les 20 premiers ports ouverts
-3. Détectez la version du service sur le port SSH de votre machine
+Ne relancez jamais un service SSH en production sans tester préalablement la syntaxe de sa configuration :
 
-> **IMPORTANT** : Ne scannez que votre propre réseau de formation ou les IP autorisées par le formateur.
+1. Validez la cohérence du fichier :  
+   sudo sshd \-t
+
+   *(Si la commande ne renvoie aucune sortie texte, la configuration est exempte d'erreur).*  
+2. Appliquez les modifications en rechargeant le démon :  
+   sudo systemctl restart ssh
+
+3. **Validation :** Ouvrez une console alternative ou tentez une connexion en root :  
+   ssh root@127.0.0.1
+
+   *Résultat attendu :* La connexion doit être rejetée immédiatement (Permission denied), confirmant que seul le compte formation est autorisé.
+
+## **Cloisonnement du système de fichiers via l'Umask (ANSSI)**
+
+Par défaut, l'Umask standard (022) accorde des permissions de lecture à l'ensemble des utilisateurs du système (755 pour les répertoires, 644 pour les fichiers). L'ANSSI impose un Umask à 027 pour interdire tout accès au groupe "Autres" (Other \= 0).
+
+### **2.1 Modification de la directive globale**
+
+1. Éditez la configuration générale de création des sessions :  
+   sudo nano /etc/login.defs
+
+2. Recherchez la ligne débutant par UMASK et modifiez-la pour forcer la valeur recommandée :  
+   UMASK 027
+
+3. Sauvegardez (Ctrl \+ O, Entrée) et quittez (Ctrl \+ X).
+
+### **2.2 Validation des permissions par défaut**
+
+1. Déconnectez-vous de votre terminal puis reconnectez-vous pour charger le nouvel environnement :  
+   exit
+
+   *(Puis rouvrez la session avec le compte formation).*  
+2. Créez un répertoire et un fichier de test :  
+   mkdir dossier\_confidential  
+   touch dossier\_confidential/document.txt
+
+3. Inspectez les permissions créées :  
+   ls \-ld dossier\_confidential  
+   ls \-l dossier\_confidential/document.txt
+
+   *Résultats attendus :*  
+   * Répertoire : drwxr-x--- (octal ![][image1])  
+   * Fichier : \-rw-r----- (octal ![][image2])  
+   * Aucun droit n'est accordé aux tiers non membres du groupe (---).
+
+## **Audit et neutralisation des binaires SUID / SGID**
+
+Un exécutable pourvu du bit SUID s'exécute avec les privilèges du propriétaire du fichier (root). Les attaquants s'appuient sur le catalogue d'abus **GTFOBins** pour exploiter ces binaires et contourner les restrictions.
+
+### **3.1 Cartographie exhaustive**
+
+1. Identifiez tous les binaires SUID présents sur la machine :  
+   sudo find / \-perm \-4000 \-type f \-exec ls \-la {} \+ 2\>/dev/null
+
+2. Analysez les résultats :  
+   * Binaires indispensables au fonctionnement standard : /usr/bin/passwd, /usr/bin/sudo, /usr/bin/su.  
+   * Binaires pouvant présenter un risque accru ou superflus : /usr/bin/ping, compilateurs, outils d'archivage ou utilitaires de trace réseau.
+
+### **3.2 Révocation du bit SUID sur un outil cible**
+
+1. Neutralisez le bit SUID sur un utilitaire non critique (ex. ping) :  
+   sudo chmod u-s /usr/bin/ping
+
+2. Vérifiez le changement de mode :  
+   ls \-la /usr/bin/ping
+
+   *Résultat attendu :* Les droits doivent passer de \-rwsr-xr-x à \-rwxr-xr-x (le bit s est remplacé par x).
+
+## **Durcissement des privilèges Sudo**
+
+L'audit Lynis du Jour 1 a remonté une anomalie sur les permissions du répertoire /etc/sudoers.d. Nous allons assainir les droits et sécuriser les délégations.
+
+### **4.1 Correction des droits sur /etc/sudoers.d**
+
+1. Vérifiez les permissions actuelles du répertoire :  
+   ls \-ld /etc/sudoers.d
+
+2. Rétablissez les permissions strictes conformes aux exigences du démon sudo :  
+   sudo chmod 750 /etc/sudoers.d  
+   sudo chmod 440 /etc/sudoers.d/\*
+
+3. Validez l'état des droits :  
+   ls \-la /etc/sudoers.d
+
+## **Application des durcissements du Noyau (Sysctl)**
+
+Pour remédier aux statuts \[ DIFFÉRENT \] observés dans le rapport Lynis, nous allons appliquer directement dans le noyau Linux les contre-mesures recommandées contre les fuites de mémoire et les détournements réseau.
+
+### **5.1 Création du fichier de durcissement ANSSI**
+
+1. Créez un fichier de configuration dédié dans l'arborescence système :  
+   sudo nano /etc/sysctl.d/99-durcissement-anssi.conf
+
+2. Ajoutez les paramètres suivants :  
+   \# Interdiction des Core Dumps pour les exécutables à privilèges (SUID)  
+   fs.suid\_dumpable \= 0
+
+   \# Protection contre le détournement de routes ICMP (Attaques Man-in-the-Middle)  
+   net.ipv4.conf.all.accept\_redirects \= 0  
+   net.ipv4.conf.default.accept\_redirects \= 0  
+   net.ipv6.conf.all.accept\_redirects \= 0  
+   net.ipv6.conf.default.accept\_redirects \= 0
+
+   \# Interdiction de l'envoi de paquets ICMP de redirection  
+   net.ipv4.conf.all.send\_redirects \= 0
+
+   \# Journalisation des paquets suspects (adresses impossibles / martians)  
+   net.ipv4.conf.all.log\_martians \= 1
+
+3. Sauvegardez (Ctrl \+ O, Entrée) et quittez (Ctrl \+ X).
+
+### **5.2 Chargement à chaud et validation**
+
+1. Forcez le noyau à charger immédiatement les nouvelles directives sans redémarrer :  
+   sudo sysctl \-p /etc/sysctl.d/99-durcissement-anssi.conf
+
+2. Contrôlez que les paramètres actifs correspondent bien à la politique :  
+   sysctl fs.suid\_dumpable  
+   sysctl net.ipv4.conf.all.accept\_redirects
+
+   *Résultat attendu :* Les deux valeurs retournées par le système doivent être strictement à 0\.
+
+## **Livrable et Critères d'évaluation**
+
+* Le fichier /etc/ssh/sshd\_config bloque l'accès direct de root et restreint les comptes autorisés.  
+* Tout dossier créé après reconnexion respecte strictement les permissions 750 (drwxr-x---) et tout fichier 640 (-rw-r-----).  
+* La commande ping ne porte plus le bit SUID (chmod u-s validé).  
+* Les permissions de /etc/sudoers.d sont verrouillées en 750 et les fichiers internes en 440\.  
+* Les clés sysctl de sécurité noyau sont chargées et actives à 0\.
+
+[image1]: <data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB8AAAAZCAYAAADJ9/UkAAADTklEQVR4Xp1WzYuNURh/zxQRiTuuuXfmfc+52YiGhY80Gik7szKKlQ1FsmBDWfisoSywMBY+JkwTSWKhEMOGhEJjIRSzEyl/Ar/nfLznOec99yZPnTnv83t+z9d5zj1Nlv23iBhIQhUhjmhDFSWaNHeQkC9i/2Q4ByaNVuJKrdLJJTDGRK5LKXcrpUYd6rtnIkreSldNvV6fq6Q8nef5Wk5ttVoN8MawnsHnFTi72hYDwikQ//glzS6NLpVcrHlKTQY82OE7jmgzXdTe3t6F4E8VRbGXEOgFOF9QwHGflWVHoBth8mDdNGRBvKdY77B+I+AjrH0+ShnrDPApjqGQPUj+C58zOK4F5Od9fX3dWrFF0dGhg9e0Owy8J41Go1Udohckn4bfrQCTaiM1giLWkx54w3A2DgfsAdYQx5D8sU8eewg3axrFRW6GvopGibEd9mhSRJYXxU5UWymIkhd5sQP7PSR5j/0t9gFnR2erpRnVqEFMBFzI5baoq47rhd2DWq17Hog/ms2mim89nO/DNuL4SHYeHU0jeE0Xnecb9CWVLrkJDb9lNvmEw0vhOUDYD+JdkzjMjuAruA7eUgqKAk5afUCaX8oof2QcT0p1XQNuaq47S+4C6SsKOGr90mJ9FvX0zKFjBv8D6fhZLdHHLtUFzsMY+y3vnEGszdVHOxKvs8ez1aNGUPUWGgds25hNmM7VT1LoN27fiLHSMdPjWWN5RzzKT1Xo5Ad0ciUHTWhvBnbCVn/MYbjd823QlyVPys/Q75RnmelxbbJFDTmQp9ZUPAS3TXJ6QkMrAgyj+wnBHgokGtR8qfSYKCB8R4B9ItUlgH4Q+Pes9E1UQB1QdzimfgY7EUj2kL3jXfb2fwQ225FwGrOAv0CMzaSTjU4Da7sO4oix4KJcQbBvIC4ISUaDrQnbZeyT6PYNvseJG1DNKdWAH8K6hnUpz4vhMl4waqeIDlVlhle127mWNsaoko0EeDtSZhPq6pKZsyTIIfudYP2LxG6V/0+M6CJj0Hm3K9yKtjFCyO3gmTQlwLaxnVQIaVoogr2Q/m/cLUOroA7C8HaS5GgwYYmhoMgQ82DsRMIcfS5fsNmZY0niwVKBK5IipTAjleKj71JK0Fv/AlV+tLSn7UPCAAAAAElFTkSuQmCC>
+
+[image2]: <data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB8AAAAZCAYAAADJ9/UkAAADeUlEQVR4Xp1WTUgVURR+gxW1qXwVPJ8z9z6JiMQgKIkWERQEtapFBNUqKKKNUQQKRhIhuIgW5aJAMvqB/mhXu6JFmEgF4SINIiJIKAgEl2LfOffcmTMz94n45X0z97vfOd89Z+4MVSoKkfyjv+WAY/maEvnr0hHYRHFOCHFLwiKB+aVsFubLiYgpswTNyj21LEmSbmPMM2vtG4zXSZx050SsygD9NehHFcVoNBo1Y+0IcrzFGIfmTFGjEFUgOAbhTJwku4lB4ovgfmGtxTlmxnQHbQfW54yxD9JV/NXr9Y3gvyD+PPGYJ5h/s9YMZNHuygOJ2jBmIep1AubGELBAwZ5L4WJeQj+PweZ+Z9jMDTJXahQSnwP3F7crmdDtM9YMIdkCdlv3C3EcH0Kiq6lIBUB3EPphV7mYS+Xgf4B7omPA7Zf8e5XU/WBhCgF/nFRDOXIAz1uwqbFarbbJinkkMnrWZALujgqjR7rTGruAtX7PMxCwXgImcT2B6ztuuTF9iHRtSsFn4yzWL9Esq9y5o7JdlAvjto5CF7eLxz3NU8BmCZjBGAa1orW1dR3MJ0isH0+1Wl0LbjySZ5dvO5vs8+a+G6LrFPOHGQsBXqcuOlh4Nebb29s3eB6t7aFWgdvh8yB4CJs94sOL5jDYI+3NVY5Cton5fc3TSaxTAMy/exN3DsxJCRikeVsbXghjX+ljUDTHm7FVKqcOpsCGuziXNTc1T1glu/2gDxgCjlNHfCKYPEVwJ92rTqTmxNE7LuYjImEkcdwt/JWMlSww/4TKP2cLnPiUq9wOynzOuATpMG5zPLDZ005npzF/oTvEr63THc5YARL3YWG24j8C7lRfEIMDXufyuV+ukh4Xf+HcS0gDJtfRsalKFMmbyV/Dy+B/V9L8CnGcrIHZJMYAphG9frifQDW3aE5JVCEM+iC5qs1jvdhodKxG7PtYDiaqptzT1MlM5SGBEG1BJY+Q8Ct2+RMntCcvFER8ep9D98+3HIk/Gm6pSxYncRVcL8YoOnMXuY/mEjRFk7UmtGuLuykhQIUQluXYQOuXAv2xESZ3KSNoVGayupsk5HlG5rQp5ed0LSZYFCqgSVyQDpJN3FOmvBQG11POlf9/kFD+Wnw+uanaQSlFAM6ad+Fm/latLwPKXG6cURFh1nP6V0GCVOLcUhEBztvqHgVklf8u5Mg61vmhYAAAAABJRU5ErkJggg==>
