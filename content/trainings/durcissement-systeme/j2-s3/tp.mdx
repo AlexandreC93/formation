@@ -1,38 +1,108 @@
----
-title: TP — Déploiement WireGuard
----
+# **TP : Défense Périphérique, Logs et Chiffrement Linux**
 
-# TP — Déploiement WireGuard VPN
+## **Objectifs**&nbsp;
 
-## Objectifs
-- Déployer un serveur WireGuard fonctionnel
-- Gérer les clés et les pairs
-- Vérifier le chiffrement du tunnel
+1. Déployer un pare-feu local (Host-Based Firewall) en mode "Zero Trust".  
+2. Configurer la centralisation des logs vers un SIEM de manière sécurisée.  
+3. Créer et manipuler un volume chiffré LUKS (FDE \- Full Disk Encryption).  
+4. Durcir le service de temps (NTP) pour garantir la chronologie légale.
 
-## Durée estimée : 45 minutes
+## **Pare-feu local (Zero Trust avec UFW)**
 
-## Exercice 1 — Serveur WireGuard
+Plutôt que de manipuler les règles complexes de `nftables`, nous allons utiliser l'interface simplifiée **UFW** imposée sur les systèmes Debian/Ubuntu.
 
-1. Installez et configurez WireGuard sur votre machine
-2. Créez l'interface `wg0` avec l'adresse `172.16.0.1/24` sur le port UDP 51820
-3. Générez une paire de clés et stockez-les sécurisément (permissions 600)
-4. Activez le routage IP et le masquerade NAT pour les clients VPN
+### **1.1 Préparation et politique par défaut**
 
-## Exercice 2 — Ajout de pairs
+* Assurez-vous qu'UFW est bien installé (il l'est généralement par défaut) :  
+  sudo apt-get install ufw \-y  
+1. &nbsp;  
+* **ATTENTION :** Avant d'activer le pare-feu, il faut absolument autoriser le trafic SSH, sinon vous serez définitivement déconnecté de la machine \! Appliquez une règle intelligente qui limite le taux de connexion (Anti-Brute Force) pour le port SSH :  
+  sudo ufw limit ssh  
+2. &nbsp;  
+* Définissez la politique stricte de type "Zero Trust" (Tout refuser en entrée, tout autoriser en sortie) :  
+  sudo ufw default deny incoming  
+* sudo ufw default allow outgoing  
+3. &nbsp;
 
-1. Générez des clés pour 3 clients `wg-client01`, `wg-client02`, `wg-client03`
-2. Assignez-leur les IPs `172.16.0.11`, `172.16.0.12`, `172.16.0.13`
-3. Ajoutez-les comme pairs dans la configuration serveur
-4. Générez les fichiers de configuration client complets
+### **1.2 Activation et journalisation**
 
-## Exercice 3 — Vérification
+* Activez le pare-feu (validez avec `y` si le système vous avertit d'une coupure possible) :  
+  sudo ufw enable  
+1. &nbsp;  
+* Activez le mode de journalisation sur "Moyen" pour tracer les paquets bloqués à des fins d'audit :  
+  sudo ufw logging medium  
+2. &nbsp;  
+* Vérifiez l'état de vos règles :  
+  sudo ufw status verbose  
+3. &nbsp;
 
-1. Vérifiez l'état du tunnel avec `wg show`
-2. Testez la connectivité entre les pairs
-3. Capturez le trafic WireGuard et vérifiez qu'il est bien chiffré (UDP opaque)
+## **Centralisation sécurisée des logs (Rsyslog)**
 
-## Exercice 4 — Tunnel SSH
+L'ANSSI interdit de conserver les journaux d'audit uniquement en local. Si le serveur est piraté, les logs seront effacés. Nous allons configurer l'envoi de nos logs vers un SOC/SIEM externe (fictif pour ce TP) via le protocole TCP (plus fiable que l'UDP).
 
-1. Créez un tunnel SSH local qui expose le port 5432 d'une machine interne sur votre localhost
-2. Rendez le tunnel persistant avec `autossh` et un service systemd
-3. Vérifiez la sécurité du tunnel (algorithmes utilisés)
+* Créez un fichier de configuration dédié à la centralisation :  
+  sudo nano /etc/rsyslog.d/99-siem-externe.conf  
+1. &nbsp;  
+* Ajoutez la directive suivante pour envoyer TOUS les logs (`*.*`) vers l'adresse IP de notre SIEM (ici l'IP fictive `192.168.100.200`) sur le port TCP `6514`. *(Note : Le double `@@` force l'utilisation du protocole TCP)* :  
+  \*.\* @@192.168.100.200:6514  
+2. &nbsp;  
+* Sauvegardez le fichier et relancez le service pour appliquer la modification :  
+  sudo systemctl restart rsyslog  
+3. &nbsp;
+
+## **Protection de la Donnée (LUKS)**
+
+Face à un accès physique ou un vol de Snapshot (VMware), le durcissement OS est inutile. Nous allons créer un coffre-fort cryptographique LUKS (l'équivalent de BitLocker). *Pour éviter d'endommager vos partitions système, nous allons créer un faux disque dur virtuel de 100 Mo.*
+
+### **3.1 Création et formatage du disque virtuel**
+
+* Créez un fichier vide de 100 Mo qui servira de disque :  
+  sudo dd if=/dev/zero of=/tmp/disque\_secret.img bs=1M count=100  
+1. &nbsp;  
+* Formatez ce fichier en partition chiffrée LUKS (Tapez `YES` en majuscules quand demandé, puis choisissez une phrase secrète robuste) :  
+  sudo cryptsetup luksFormat /tmp/disque\_secret.img  
+2. &nbsp;
+
+### **3.2 Ouverture et utilisation du coffre-fort**
+
+* Déverrouillez le disque (vous devrez saisir la phrase secrète). Le disque sera "mappé" (monté virtuellement) sous le nom `coffre_ouvert` :  
+  sudo cryptsetup luksOpen /tmp/disque\_secret.img coffre\_ouvert  
+1. &nbsp;  
+* Le disque est maintenant déchiffré mais il est brut. Formatez-le avec un système de fichiers classique (Ext4) :  
+  sudo mkfs.ext4 /dev/mapper/coffre\_ouvert  
+2. &nbsp;  
+* Montez-le dans le système pour pouvoir y écrire vos fichiers :  
+  sudo mkdir \-p /mnt/secret  
+* sudo mount /dev/mapper/coffre\_ouvert /mnt/secret  
+3. &nbsp;  
+* **Validation :** Écrivez un fichier texte à l'intérieur :  
+  echo "Base de données clients ultra confidentielle" | sudo tee /mnt/secret/clients.txt  
+4. &nbsp;
+
+### **3.3 Fermeture (Mise en sécurité)**
+
+Une fois l'opération terminée, il faut refermer le coffre.
+
+* Démontez le dossier :  
+  sudo umount /mnt/secret  
+1. &nbsp;  
+* Verrouillez le disque LUKS (la donnée redevient illisible) :  
+  sudo cryptsetup luksClose coffre\_ouvert  
+2. &nbsp;
+
+## **Durcissement Temporel (NTP / Chrony)**
+
+Le démon `chrony` synchronise l'horloge. Un attaquant peut manipuler le temps pour rendre des certificats TLS valides ou brouiller vos logs.
+
+* Installez le démon NTP moderne :  
+  sudo apt-get install chrony \-y  
+  &nbsp;  
+* Éditez le fichier de configuration :  
+  sudo nano /etc/chrony/chrony.conf  
+  &nbsp;  
+* À la fin du fichier, ajoutez cette ligne stricte pour interdire à Chrony d'ouvrir un port d'écoute réseau. *(Votre serveur doit être uniquement un client, pas un fournisseur d'heure, ce qui ferme un vecteur d'attaque DDoS)* :  
+  port 0  
+  &nbsp;  
+* Sauvegardez et relancez le service :  
+  sudo systemctl restart chrony  
+  &nbsp;
