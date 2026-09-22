@@ -1,75 +1,56 @@
----
-title: Corrigé — Diagnostic et analyse réseau
----
+# **Durcissement Fondamental Linux**
 
-# Corrigé — Diagnostic et analyse réseau
+**Verrouillage du service d'accès distant (OpenSSH)**
 
-## Exercice 1
+### **Validation**
 
-```bash
-# Configuration réseau complète
-echo "=== INTERFACES ==="
-ip -o addr show | awk '{print $2, $4}'
-echo "=== ROUTES ==="
-ip route show
-echo "=== DNS ==="
-cat /etc/resolv.conf
+* **La commande `sudo sshd -t` :** Ne doit renvoyer aucune sortie texte. Une sortie indiquerait une erreur de syntaxe dans le fichier de configuration (ex: `PermitRootLogin` mal orthographié).  
+* **Le test `ssh root@127.0.0.1` :** Le système doit rejeter la connexion instantanément avec le message `Permission denied (publickey,password)`.
 
-# Ports en écoute avec process
-ss -tulnp | awk 'NR==1 || /LISTEN/'
+**Explication technique :**
 
-# Connexions TCP par application
-ss -tnp state established | awk 'NR>1 {print $NF}' | \
-  grep -oP 'users:\(\("\K[^"]+' | sort | uniq -c | sort -rn
-```
+> L'utilisation du paramètre `-t` (Test) avant le redémarrage du service est une bonne pratique incontournable en administration Linux. Si une erreur de syntaxe est présente dans `sshd_config` et que le service est redémarré, le démon SSH risque de s'arrêter brutalement. Sur un serveur distant, cela entraîne une perte d'accès définitive nécessitant une intervention physique ou via hyperviseur.
 
-## Exercice 2
+## **Cloisonnement du système de fichiers via l'Umask**
 
-```bash
-# Enregistrements DNS
-dig mail.example.com A +short
-dig example.com MX +short
-dig example.com TXT +short
-dig example.com TXT +short | grep spf
+### **Validation technique**
 
-# Résolution inverse
-MY_IP=$(curl -s ifconfig.me)
-dig -x $MY_IP +short
+* **Les permissions octales attendues après reconnexion :**  
+  * Pour le répertoire `dossier_confidential` : `drwxr-x---` (Les droits appliqués sont 750 : `rwx` pour le propriétaire, `r-x` pour le groupe, et `---` pour les autres utilisateurs).  
+  * Pour le fichier `document.txt` : `-rw-r-----` (Les droits appliqués sont 640 : `rw-` pour le propriétaire, `r--` pour le groupe, et `---` pour les autres utilisateurs).
 
-# Serveur autoritaire
-dig example.com NS +short
-dig @$(dig example.com NS +short | head -1) example.com SOA +short
-```
+**Explication technique :**
 
-## Exercice 3
+> Un Umask configuré à 027 est une exigence classique lors des audits de conformité (ANSSI). Il permet d'appliquer le principe de "Sécurité par défaut" (Security by Default). Ainsi, tout fichier ou dossier créé par un utilisateur ou un service applicatif est nativement protégé contre la lecture par des tiers non autorisés, sans nécessiter d'action manuelle supplémentaire.
 
-```bash
-# Capture 60s sur port 443
-INTERFACE=$(ip route | grep default | awk '{print $5}' | head -1)
-tcpdump -i $INTERFACE 'tcp port 443' -w /tmp/tls-capture.pcap &
-TCPDUMP_PID=$!
-sleep 60
-kill $TCPDUMP_PID
+## **Audit et neutralisation des binaires SUID / SGID**
 
-# Top 5 IPs distantes
-tcpdump -r /tmp/tls-capture.pcap -nn 'tcp port 443' 2>/dev/null | \
-  grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort | uniq -c | sort -rn | head -5
+### **Validation technique**
 
-# Connexions RST
-tcpdump -r /tmp/tls-capture.pcap -nn 'tcp[tcpflags] & tcp-rst != 0' 2>/dev/null | head -20
-```
+* **La commande d'audit :** L'ajout de `2>/dev/null` à la fin de la commande `find` permet d'exclure les erreurs de type "Permission non accordée" (générées par les répertoires restreints) afin de n'afficher que la liste des exécutables pertinents.  
+* **La révocation sur `ping` :** Les permissions finales doivent être `-rwxr-xr-x`. Le bit `s` (SUID) du propriétaire a été remplacé par le droit d'exécution standard `x`.
 
-## Exercice 4
+**Explication technique :**
 
-```bash
-# Sous-réseau local
-NET=$(ip route | grep 'src' | grep -v default | head -1 | awk '{print $1}')
-nmap -sn $NET -oG - | grep "Up" | awk '{print $2}'
+> Historiquement, l'utilitaire `ping` nécessitait les droits du super-administrateur (via le bit SUID) pour ouvrir les sockets réseau nécessaires à l'émission de paquets ICMP. Les distributions Linux modernes utilisent le mécanisme des "Capabilities" pour attribuer ces droits de manière granulaire. Retirer le bit SUID sur ces anciens binaires est une mesure de réduction de la surface d'attaque visant à prévenir les élévations de privilèges (vecteurs GTFOBins).
 
-# 20 premiers ports des hôtes trouvés
-nmap -sn $NET -oG - | grep "Up" | awk '{print $2}' | \
-  xargs -I{} nmap -F {} --open 2>/dev/null
+## **Durcissement des privilèges Sudo**
 
-# Version SSH
-nmap -sV -p 22 127.0.0.1
-```
+### **Validation technique**
+
+* **Les droits du répertoire `/etc/sudoers.d` :** Doivent être strictement définis à `drwxr-x---` (750).  
+* **Les droits des fichiers contenus (ex: `auditscan`) :** Doivent être strictement définis à `-r--r-----` (440).
+
+**Explication technique :**
+
+> Le démon `sudo` applique des contrôles d'intégrité très stricts. S'il détecte que les fichiers contenus dans l'arborescence `/etc/sudoers.d/` possèdent des permissions trop permissives (permettant la modification par des utilisateurs non autorisés), il ignorera purement et simplement ces fichiers par sécurité. Le respect strict des droits 750/440 garantit la prise en compte de la politique de délégation.
+
+## **Application des durcissements du Noyau (Sysctl)**
+
+### **Validation**
+
+* **Le chargement :** La commande `sudo sysctl -p /etc/sysctl.d/99-durcissement-anssi.conf` doit retourner les paramètres nouvellement chargés.  
+* **La validation :** La commande `sysctl fs.suid_dumpable` doit retourner la valeur `fs.suid_dumpable = 0`.  
+  &nbsp;
+
+> L'interface `sysctl` permet de modifier le comportement du noyau Linux dynamiquement. L'argument `-p` (Load from file) injecte les règles de sécurité directement en mémoire vive, appliquant le durcissement instantanément sans nécessiter de redémarrage du système. Les paramètres appliqués ici neutralisent efficacement des techniques d'attaques ciblées telles que la récupération de secrets en mémoire (Core Dumps) ou les attaques de l'Homme du Milieu via ICMP.
