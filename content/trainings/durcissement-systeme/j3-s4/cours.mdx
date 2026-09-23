@@ -1,96 +1,85 @@
----
-title: Chiffrement de Partitions & Données au Repos
----
+# ***Protection Mémoire, Credential Guard et Règles ASR***
 
-# Chiffrement de Partitions & Données au Repos
+***Objectifs :***
 
-## LUKS (Linux Unified Key Setup)
+* *Comprendre en profondeur le fonctionnement du processus LSASS et les architectures d'attaque (Dumping, Injection).*  
+* *Maîtriser le concept de Processus Protégé (PPL \- Protected Process Light).*  
+* *Architecture et implémentation de la Sécurité Basée sur la Virtualisation (VBS) et de Credential Guard.*  
+* *Déployer une défense comportementale via la Réduction de la Surface d'Attaque (ASR).*
 
-```bash
-# Initialiser une partition chiffrée LUKS2
-cryptsetup luksFormat --type luks2 \
-  --cipher aes-xts-plain64 \
-  --key-size 512 \
-  --hash sha256 \
-  --iter-time 5000 \
-  /dev/sdb1
+## ***1\. LSASS et des Attaques sur les Identifiants***
 
-# Ouvrir le conteneur
-cryptsetup luksOpen /dev/sdb1 donnees-chiffrees
+*Le service de sous-système de l'autorité de sécurité locale (lsass.exe) est la cible privilégiée des attaquants post-exploitation. Son rôle est de vérifier les connexions, gérer les changements de mots de passe et créer les jetons d'accès (Tokens).*
 
-# Créer le système de fichiers
-mkfs.ext4 /dev/mapper/donnees-chiffrees
+### ***1.1 Le stockage en mémoire vive (Le paradigme du SSO)***
 
-# Monter
-mount /dev/mapper/donnees-chiffrees /mnt/secure
+*Pour garantir une expérience de Single Sign-On (SSO) fluide, LSASS fait appel à différents fournisseurs de sécurité (SSP \- Security Support Providers) qui conservent des secrets en RAM.*
 
-# Fermer (démonter + verrouiller)
-umount /mnt/secure
-cryptsetup luksClose donnees-chiffrees
+* ***WDigest :** Historiquement, conservait les mots de passe en clair (désactivé par défaut depuis Windows 8.1, mais réactivable par un attaquant via registre).*  
+* ***Kerberos :** Conserve les Tickets TGT (Ticket-Granting Tickets) et les clés de session.*  
+* ***MSV1\_0 (NTLM) :** Conserve les empreintes (Hashs) NT, utilisées dans les attaques Pass-the-Hash.*
 
-# Inspecter
-cryptsetup luksDump /dev/sdb1
-```
+### ***1.2 Les méthodes d'extraction (Dumping)***
 
-## Gestion des slots de clés LUKS
+*Un attaquant disposant des privilèges Administrateur Local (ou SYSTEM) sur une machine utilise des outils (Mimikatz, ProcDump, ou des scripts PowerShell natifs) pour lire la mémoire de LSASS. La faille fondamentale réside dans le fait que, par défaut, le noyau Windows accorde le droit PROCESS\_ALL\_ACCESS (incluant PROCESS\_VM\_READ) à n'importe quel processus lancé en tant qu'Administrateur qui demande à lire lsass.exe.*
 
-```bash
-# Ajouter une clé supplémentaire (ex: clé de secours)
-cryptsetup luksAddKey /dev/sdb1  # Demande l'ancienne clé puis la nouvelle
+## 
 
-# Ajouter un fichier de clé (keyfile)
-dd if=/dev/urandom of=/root/keyfile.bin bs=4096 count=1
-chmod 400 /root/keyfile.bin
-cryptsetup luksAddKey /dev/sdb1 /root/keyfile.bin
+## 
 
-# Lister les slots actifs
-cryptsetup luksDump /dev/sdb1 | grep 'Key Slot'
+## 
 
-# Révoquer un slot
-cryptsetup luksKillSlot /dev/sdb1 1  # Révoque le slot 1
+## ***2\. Niveau 1 : LSA Protection (RunAsPPL)***
 
-# /etc/crypttab pour le montage automatique
-echo "donnees-chiffrees /dev/sdb1 /root/keyfile.bin luks" >> /etc/crypttab
-```
+*Pour contrer cette lecture libre de la mémoire, Microsoft a introduit le concept de **PPL (Protected Process Light)**.*
 
-## VeraCrypt (conteneurs chiffrés)
+### ***2.1 Le modèle de confiance du Noyau***
 
-```bash
-# Créer un conteneur chiffré de 2 Go
-veracrypt --text --create /opt/conteneur.vc \
-  --size 2G \
-  --encryption AES \
-  --hash SHA-512 \
-  --filesystem ext4 \
-  --password "motdepassefort" \
-  --pim 0 \
-  --keyfiles ""
+*Lorsqu'un processus est défini comme "Protégé" (PPL), le gestionnaire d'objets du noyau Windows refuse formellement l'accès à ce processus à tout autre processus qui ne possède pas un certificat de signature numérique spécifique émis par Microsoft.*
 
-# Monter
-veracrypt --text --mount /opt/conteneur.vc /mnt/secure \
-  --password "motdepassefort" --pim 0
+* ***Sans PPL :** Mimikatz (même non signé) demande à lire LSASS $\\rightarrow$ Le noyau accepte (car l'utilisateur est admin).*  
+* ***Avec PPL :** Mimikatz demande à lire LSASS $\\rightarrow$ Le noyau vérifie la signature de Mimikatz $\\rightarrow$ Signature non valide (ou absente) $\\rightarrow$ Le noyau renvoie Access Denied (Erreur 5), même si Mimikatz tourne en SYSTEM.*
 
-# Démonter
-veracrypt --text --dismount /mnt/secure
-```
+## ***3\. Credential Guard (VBS)***
 
-## Chiffrement de volumes systemd-homed
+*Pour parer à la faiblesse d'une protection logicielle, l'ANSSI impose pour les actifs critiques (Tier 0 / Tier 1\) le déploiement de **Credential Guard**. C'est un changement architectural majeur qui repose sur la virtualisation matérielle (VBS \- Virtualization-Based Security).*
 
-```bash
-# Créer un utilisateur avec home chiffré
-homectl create utilisateur-secure \
-  --real-name="Utilisateur Sécurisé" \
-  --storage=luks \
-  --disk-size=5G \
-  --password="motdepassefort"
+### ***3.1 Architecture de l'Hyperviseur (Ring \-1)***
 
-# Activer
-homectl activate utilisateur-secure
+*Avec Credential Guard, l'OS Windows que vous voyez n'est plus le maître absolu du matériel. Un hyperviseur minimaliste (Hyper-V) s'installe en dessous de Windows (au niveau Ring \-1).*
 
-# Désactiver (verrouille le home chiffré)
-homectl deactivate utilisateur-secure
+*Windows est divisé en deux mondes :*
 
-# Lister
-homectl list
-homectl inspect utilisateur-secure
-```
+1. ***Le VTL 0 (Virtual Trust Level 0\) :** C'est le Windows normal (Noyau \+ Espace Utilisateur).*  
+2. ***Le VTL 1 (Le mode sécurisé) :** Un micro-conteneur ultra-sécurisé géré par l'hyperviseur, totalement inaccessible depuis le VTL 0\.*
+
+### ***3.2 Le cloisonnement des secrets (LSAIso)***
+
+*Lors de l'activation de Credential Guard :*
+
+1. *Les secrets (Hashs NTLM, Tickets Kerberos) sont retirés de lsass.exe (VTL 0).*  
+2. *Ils sont stockés dans un nouveau processus appelé **LSAIso.exe** (LSA Isolé), qui s'exécute dans le VTL 1\.*  
+3. *Le lsass.exe classique devient un simple facteur (un Proxy). Lorsqu'une authentification est requise, il envoie une requête RPC chiffrée au VTL 1\. LSAIso effectue le calcul mathématique dans son coffre-fort et ne renvoie que le résultat (Oui/Non) à lsass.exe.*
+
+*Impact de sécurité : Même si l'attaquant charge un rootkit noyau (Ring 0\) sur Windows, il ne peut pas lire la mémoire du VTL 1, car le processeur matériellement (via les instructions Intel VT-x / AMD-V) lui en interdit l'accès. Le "Pass-the-Hash" devient architecturalement impossible.*
+
+## ***4\. La Défense Comportementale : Les Règles ASR***
+
+*Les solutions EDR et Antivirus traditionnels échouent face aux techniques "Living off the Land" (LotL). Pour combler ce vide, Windows Defender intègre la **Réduction de la Surface d'Attaque (ASR \- Attack Surface Reduction)**.*
+
+### ***4.1 Le concept de l'ASR***
+
+*Les règles ASR ne cherchent pas un malware, elles **interdisent un comportement métier dangereux**. L'objectif est de bloquer techniquement des actions qui sont souvent utilisées par les attaquants mais très rarement par les utilisateurs normaux.*
+
+### ***4.2 Les GUIDs Critiques (Recommandations ANSSI)***
+
+*Les règles ASR sont identifiées par des GUID (Identifiants Uniques) et pilotables par GPO. Les règles les plus critiques à déployer sont :*
+
+* ***Bloquer le vol d’informations d’identification dans LSASS :** 9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2 (C'est la couche de défense complémentaire si Credential Guard n'est pas activable sur d'anciens matériels).*  
+* ***Bloquer les processus enfants issus d'Office :** d4f940ab-401b-4efc-aadc-ad5f3c50688a (Un document Word n'a aucune raison légitime de lancer powershell.exe ou cmd.exe. Cette règle tue 90% des Macros malveillantes).*  
+* ***Bloquer l'exécution de code à partir de clés USB :** b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4.*  
+* ***Bloquer le vol de mots de passe par les processus non signés :** Limite les techniques de Scraping de mémoire.*
+
+*Méthodologie de déploiement : À l'instar d'AppLocker, les règles ASR disposent d'un **Mode Audit** (Valeur \= 2). Elles doivent obligatoirement être déployées en écoute passive pendant plusieurs semaines pour identifier d'éventuels faux positifs liés à des applications métiers exotiques, avant d'être passées en **Mode Blocage** (Valeur \= 1).*
+
+&nbsp;
