@@ -1,93 +1,70 @@
----
-title: Politiques de Sécurité CIS Benchmark
----
+# **Le Moindre Privilège (JEA vs Sudo)**
 
-# Politiques de Sécurité CIS Benchmark
+**Objectifs :**
 
-## Qu'est-ce que le CIS Benchmark ?
+* Comprendre le paradigme du "No Standing Privileges" (NSP) exigé par l'ANSSI.  
+* Comparer l'approche de délégation Linux (`sudo`) avec l'approche Windows (JEA).  
+* Maîtriser l'architecture de *Just Enough Administration* (JEA) dans PowerShell.  
+* Configurer la transcription (Over-the-shoulder logging) pour le SOC.
 
-Le **Center for Internet Security (CIS)** publie des guides de configuration de sécurité pour Linux, Windows, Docker, Kubernetes, etc.
+## **1\. La Fin des "Administrateurs Permanents"**
 
-- **Niveau 1** : Configurations de base, impact minimal sur les performances
-- **Niveau 2** : Configurations avancées pour environnements haute sécurité
+### **1.1 Le problème du "Standing Privilege"**
 
-## Contrôles CIS essentiels pour Linux
+Donner les droits d'administrateur local de façon permanente à un utilisateur, même pour accomplir une seule tâche métier légitime, est une faille de sécurité majeure :
 
-```bash
-# 1. Désactiver les systèmes de fichiers dangereux
-cat >> /etc/modprobe.d/cis-hardening.conf << 'EOF'
-install cramfs /bin/true
-install freevxfs /bin/true
-install jffs2 /bin/true
-install hfs /bin/true
-install hfsplus /bin/true
-install squashfs /bin/true
-install udf /bin/true
-EOF
+* **Surface d'attaque maximale :** Si le compte du technicien est compromis, l'attaquant hérite d'un accès total et illimité au serveur 24h/24.  
+* **Mouvements latéraux :** L'attaquant peut dumper la mémoire (LSASS), désactiver l'antivirus, ou modifier l'Active Directory.
 
-# 2. Options de montage sécurisées dans /etc/fstab
-tmpfs /tmp tmpfs defaults,rw,nosuid,nodev,noexec,relatime 0 0
+### **1.2 Le Paradigme Zero Trust (NSP)**
 
-# 3. Core dumps désactivés
-cat >> /etc/security/limits.d/cis.conf << 'EOF'
-* hard core 0
-EOF
-echo 'fs.suid_dumpable = 0' >> /etc/sysctl.d/cis.conf
-sysctl -p /etc/sysctl.d/cis.conf
+L'ANSSI et les frameworks modernes imposent le **No Standing Privileges (NSP)**. Un utilisateur ne doit avoir *aucun* droit d'administration par défaut. Il ne doit obtenir des privilèges que pour une tâche précise, sur une cible précise, et pour une durée limitée.
 
-# 4. ASLR
-echo 'kernel.randomize_va_space = 2' >> /etc/sysctl.d/cis.conf
+## **2\. Linux vs Windows : Le comparatif architectural**
 
-# 5. Paramètres réseau CIS
-cat >> /etc/sysctl.d/cis-network.conf << 'EOF'
-net.ipv4.ip_forward = 0
-net.ipv4.conf.all.rp_filter = 1
-net.ipv4.conf.default.rp_filter = 1
-net.ipv4.conf.all.accept_redirects = 0
-net.ipv4.conf.all.send_redirects = 0
-net.ipv4.tcp_syncookies = 1
-net.ipv4.conf.all.log_martians = 1
-EOF
-sysctl -p /etc/sysctl.d/cis-network.conf
-```
+Pour déléguer une action sans donner le mot de passe "root" ou "Administrateur", les deux mondes ont des approches différentes.
 
-## Audit avec Lynis
+### **2.1 La méthode Linux (`sudo`)**
 
-```bash
-# Installation
-apt install lynis -y
+Sous Linux, la délégation granulaire existe depuis des décennies via le fichier `/etc/sudoers`. On peut autoriser un utilisateur standard (ex: `jdupont`) à exécuter une et une seule commande avec les droits root.
 
-# Audit système complet
-lynis audit system
+* *Exemple :* `jdupont ALL=(root) NOPASSWD: /bin/systemctl restart apache2` L'utilisateur tape `sudo systemctl restart apache2`, le noyau Linux élève temporairement ses privilèges juste pour cette exécution, puis les redescend.
 
-# Rapport détaillé
-cat /var/log/lynis-report.dat | grep -E 'warning|suggestion' | head -30
+### **2.2 La méthode Windows (JEA \- Just Enough Administration)**
 
-# Comparer les scores
-lynis audit system --no-colors | grep 'Hardening index'
-```
+Jusqu'à récemment, Windows ne savait pas élever les droits "à la commande" de manière native et sécurisée. Soit on était Administrateur, soit on ne l'était pas. Microsoft a introduit **JEA (Just Enough Administration)** via PowerShell 5.0 pour combler cette lacune.
 
-## Script de durcissement automatique
+JEA crée une "Capsule de confinement" (Endpoint) PowerShell sur le serveur cible. Lorsqu'un utilisateur standard s'y connecte, **JEA ne lui donne pas les droits administrateurs**. Au contraire, JEA crée un **Compte Virtuel (Virtual Account)** administrateur, invisible et temporaire, qui exécutera la commande *à la place* de l'utilisateur.
 
-```bash
-#!/bin/bash
-# harden-cis.sh - Durcissement CIS Benchmark niveau 1
+## **3\. L'Architecture de JEA (Sous le capot)**
 
-set -euo pipefail
-LOG=/var/log/hardening-$(date +%Y%m%d).log
-echo "Début du durcissement : $(date)" | tee $LOG
+La mise en place d'un Bastion JEA repose sur deux fichiers de configuration et le moteur WinRM (Windows Remote Management).
 
-# Bannir les modules inutiles
-for mod in cramfs freevxfs jffs2 hfs hfsplus udf; do
-    echo "install $mod /bin/true" >> /etc/modprobe.d/cis.conf
-    echo "Module $mod désactivé" | tee -a $LOG
-done
+### **3.1 Le Fichier de Capacité de Rôle (`.psrc` \- Role Capabilities)**
 
-# sysctl
-sysctl -w kernel.randomize_va_space=2
-sysctl -w net.ipv4.tcp_syncookies=1
-sysctl -w net.ipv4.conf.all.rp_filter=1
-sysctl -p
+Ce fichier définit **CE QUE** l'on a le droit de faire. C'est la liste blanche des commandes.
 
-echo "Durcissement terminé : $(date)" | tee -a $LOG
-```
+* Il liste explicitement les Cmdlets PowerShell (ex: `Restart-Service`), les fonctions et les exécutables externes autorisés.  
+* **Granularité extrême :** Il est possible de brider les paramètres d'une commande. Par exemple, autoriser `Restart-Service`, mais **uniquement** si le paramètre `-Name` vaut `dns`.
+
+### **3.2 Le Fichier de Configuration de Session (`.pssc` \- Session Configuration)**
+
+Ce fichier définit **QUI** a le droit de se connecter, et **COMMENT**.
+
+* Il associe un groupe de sécurité Active Directory (ex: `Helpdesk_DNS`) à un fichier de capacité de rôle (`.psrc`).  
+* Il définit l'utilisation d'un **RunAsVirtualAccount**. L'utilisateur se connectera avec son propre compte AD standard (sans droits), mais ses commandes seront exécutées par un compte local virtuel généré à la volée, possédant les droits d'administration locaux du serveur cible.
+
+### **3.3 Le transport : WinRM et le Mode de Langage Contraint (CLM)**
+
+La connexion s'effectue via le réseau en PowerShell Remoting (TCP 5985/5986). Dès que l'utilisateur est connecté dans la capsule JEA, son terminal PowerShell bascule automatiquement en **Constrained Language Mode (CLM)** (Mode de langage contraint). Il lui est mathématiquement impossible d'exécuter du code malveillant en C\#, d'invoquer des API Windows, de lire des variables système ou de sortir du périmètre défini par le `.psrc`.
+
+## **4\. Exploitation et Traçabilité pour le SOC**
+
+Une fois le point de terminaison JEA enregistré sur le serveur cible, l'exploitation est transparente pour le technicien.
+
+1. **La Connexion :** Depuis son poste, le technicien ouvre PowerShell et tape : `Enter-PSSession -ComputerName SRV-DNS -ConfigurationName "MaintenanceDNS"` *(Où `MaintenanceDNS` est le nom de la capsule JEA que nous avons créée).*  
+2. **L'Action :** Il ne voit plus son profil habituel. S'il tape `Get-Command`, il ne verra que les 2 ou 3 commandes que vous avez autorisées. Il peut redémarrer le service DNS.  
+3. **La Traçabilité (Transcript Logging) :** C'est le rêve de tout analyste SOC. JEA est nativement configuré pour générer des **Transcriptions**. Chaque touche de clavier tapée par le technicien dans la capsule JEA est enregistrée dans un fichier texte brut stocké dans un dossier sécurisé du serveur. En cas d'incident, l'architecte peut relire exactement les commandes (et leurs paramètres) tapées par l'utilisateur, à la seconde près.
+
+**Conclusion :** JEA permet d'exécuter l'équivalent de `sudo` sous Windows, offrant un cloisonnement parfait et empêchant tout mouvement latéral de la part des administrateurs Tier 1 et Tier 2\.
+

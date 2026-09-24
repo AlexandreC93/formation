@@ -1,41 +1,137 @@
----
-title: TP — Durcissement CIS Benchmark
----
+# ***Déploiement et Configuration de JEA (Just Enough Administration)***
 
-# TP — Durcissement CIS Benchmark
+## ***Préparation de l'environnement (Groupes et Répertoires)***
 
-## Objectifs
-- Évaluer la conformité d'un système avec Lynis
-- Appliquer les contrôles CIS niveau 1
-- Mesurer l'amélioration du score
+*Créez le groupe de sécurité qui sera autorisé à utiliser la capsule JEA :*  
+*New-ADGroup \-Name "JEA\_DNS\_Admins" \-GroupCategory Security \-GroupScope Global*
 
-## Durée estimée : 45 minutes
+1. 
 
-## Exercice 1 — Baseline Lynis
+*Ajoutez l'utilisateur standard (ex: `pirate`) à ce groupe :*  
+*Add-ADGroupMember \-Identity "JEA\_DNS\_Admins" \-Members "pirate"*
 
-1. Installez Lynis et lancez un audit complet
-2. Notez le score de durcissement initial (Hardening Index)
-3. Listez les 10 suggestions prioritaires
+2. 
 
-## Exercice 2 — Implémentation CIS niveau 1
+*Créez le dossier qui stockera les fichiers de transcription (logs) :*  
+*New-Item \-Path "C:\\JEA\_Transcripts" \-ItemType Directory*
 
-Appliquez ces contrôles et documentez chaque étape :
-1. Désactiver les systèmes de fichiers inutilisables
-2. Sécuriser les options de montage (`/tmp`, `/var/tmp`, `/dev/shm`)
-3. Activer ASLR (niveau 2)
-4. Configurer les paramètres sysctl réseau anti-spoofing
-5. Vérifier que root a un hash de mot de passe valide
+3. 
 
-## Exercice 3 — Politique de comptes PAM
+## ***Création du fichier de Capacité de Rôle (.psrc)***
 
-Configurez PAM pour :
-1. Longueur minimale de mot de passe : 14 caractères
-2. Complexité : au moins 1 majuscule, 1 chiffre, 1 symbole
-3. Historique : interdire les 5 derniers mots de passe
-4. Verrouillage : 5 tentatives échouées = 15 minutes de blocage
+*Le fichier `.psrc` (Role Capability) définit les commandes autorisées. Pour être reconnu par JEA, ce fichier doit obligatoirement être placé dans un dossier de module PowerShell spécifique.*
 
-## Exercice 4 — Post-durcissement
+*Créez la structure de dossiers requise par Windows :*  
+*New-Item \-Path "C:\\Program Files\\WindowsPowerShell\\Modules\\JEA\_DNS\\RoleCapabilities" \-ItemType Directory \-Force*
 
-1. Relancez Lynis et comparez le score
-2. Documentez les améliorations dans un rapport
-3. Identifiez les contrôles non appliqués et justifiez
+1. 
+
+*Générez le fichier de capacité de rôle vierge :*  
+*New-PSRoleCapabilityFile \-Path "C:\\Program Files\\WindowsPowerShell\\Modules\\JEA\_DNS\\RoleCapabilities\\ManageDNS.psrc"*
+
+2. 
+
+*Ouvrez ce fichier dans le Bloc-notes pour le modifier :*  
+*notepad "C:\\Program Files\\WindowsPowerShell\\Modules\\JEA\_DNS\\RoleCapabilities\\ManageDNS.psrc"*
+
+3.   
+4. *Dans le Bloc-notes, localisez la ligne `# VisibleCmdlets = 'Invoke-Cmdlet1', @{ Name = 'Invoke-Cmdlet2'; Parameters = @{ Name = 'Parameter1'; ValidateSet = 'Item1', 'Item2' }, @{ Name = 'Parameter2'; ValidatePattern = 'Regex' } }`.*
+
+*Remplacez cette ligne (en enlevant le `#` au début) par la configuration suivante, qui autorise uniquement le redémarrage et la consultation du service DNS :*  
+*VisibleCmdlets \= @{ Name \= 'Restart-Service'; Parameters \= @{ Name \= 'Name'; ValidateSet \= 'dns' }}, @{ Name \= 'Get-Service'; Parameters \= @{ Name \= 'Name'; ValidateSet \= 'dns' }}*
+
+5.   
+6. *Enregistrez le fichier et fermez le Bloc-notes.*
+
+## ***Création du fichier de Configuration de Session (.pssc)***
+
+*Le fichier `.pssc` (Session Configuration) définit qui peut se connecter et comment l'exécution est isolée.*
+
+*Générez le fichier de configuration de session à la racine du disque C:*  
+*New-PSSessionConfigurationFile \-Path "C:\\JEA\_Config.pssc" \-SessionType RestrictedRemoteServer \-RunAsVirtualAccount \$true \-TranscriptDirectory "C:\\JEA\_Transcripts" \-RoleDefinitions @{ 'formation\\JEA\_DNS\_Admins' \= @{ RoleCapabilities \= 'ManageDNS' } }*
+
+1. 
+
+*Testez la validité syntaxique du fichier généré :*  
+*Test-PSSessionConfigurationFile \-Path "C:\\JEA\_Config.pssc"*
+
+2. *(La commande doit retourner "True").*
+
+## ***Enregistrement du point de terminaison (Endpoint) JEA***
+
+*Il faut maintenant déclarer cette configuration au service WinRM (Windows Remote Management) pour la rendre active sur le réseau.*
+
+*Enregistrez la session JEA sous le nom "DNS\_Maintenance" :*  
+*Register-PSSessionConfiguration \-Name "DNS\_Maintenance" \-Path "C:\\JEA\_Config.pssc" \-Force*
+
+1. 
+
+*Redémarrez le service WinRM pour appliquer immédiatement les changements :*  
+*Restart-Service WinRM*
+
+2. 
+
+*Vérifiez que l'Endpoint est bien enregistré en listant les configurations disponibles :*  
+*Get-PSSessionConfiguration \-Name "DNS\_Maintenance"*
+
+3. 
+
+## ***Validation et tests d'exécution (Connexion Utilisateur)***
+
+*Nous allons maintenant simuler la connexion du technicien standard.*
+
+1. *Ouvrez une **nouvelle** fenêtre PowerShell classique (sans les droits d'administration).*
+
+*Connectez-vous à la capsule JEA en utilisant l'utilisateur `pirate` (une fenêtre de mot de passe s'ouvrira) :*  
+*Enter-PSSession \-ComputerName localhost \-ConfigurationName "DNS\_Maintenance" \-Credential "formation\\pirate"*
+
+2.   
+3. *Le prompt PowerShell change et affiche `[localhost]: PS>`. Vous êtes dans l'environnement JEA.*
+
+*Listez les commandes à votre disposition :*  
+*Get-Command*
+
+4. *(Vous ne verrez que les commandes de base (Clear-Host, Exit, etc.) et les deux commandes autorisées : Get-Service et Restart-Service).*
+
+*Testez une action autorisée :*  
+*Restart-Service \-Name dns*
+
+5. *(La commande s'exécute avec succès grâce au compte virtuel administrateur généré en arrière-plan).*
+
+*Testez une action non autorisée sur une commande pourtant visible :*  
+*Restart-Service \-Name spooler*
+
+6. *(La commande est rejetée car le paramètre '-Name' ne correspond pas à 'dns').*
+
+*Testez une commande interdite :*  
+*Stop-Computer*
+
+7. *(La commande est introuvable).*
+
+*Testez le Constrained Language Mode (tentative d'instanciation .NET) :*  
+*\$test \= New-Object \-TypeName System.IO.FileInfo \-ArgumentList "C:\\Windows"*
+
+8. *(Erreur indiquant que l'opération n'est pas supportée dans ce mode de langage).*
+
+*Quittez la session JEA :*  
+*Exit-PSSession*
+
+9. 
+
+## ***Traçabilité (Vérification des logs Over-the-shoulder)***
+
+*Toute l'activité de l'étape 5 a été enregistrée.*
+
+1. *Retournez dans votre fenêtre **PowerShell en tant qu'Administrateur**.*
+
+*Listez le contenu du répertoire des transcriptions :*  
+*Get-ChildItem \-Path "C:\\JEA\_Transcripts"*
+
+2. 
+
+*Ouvrez le fichier texte généré avec le Bloc-notes (le nom du fichier dépend de la date) :*  
+*notepad (Get-ChildItem \-Path "C:\\JEA\_Transcripts\\\*.txt")\[0\].FullName*
+
+3.   
+4. *Le fichier texte contient l'intégralité des touches tapées, des commandes exécutées et des erreurs générées par l'utilisateur `pirate` durant sa session dans la capsule JEA.*
+
