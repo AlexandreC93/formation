@@ -1,39 +1,107 @@
----
-title: TP — Audit et journalisation
----
+# **Bastion \- Jonction AD et Filtrage SSSD (Tier 0\)**
 
-# TP — Audit système et journalisation
+**Objectif :** Connecter le serveur Ubuntu à l'Active Directory Windows pour centraliser les identités, mais brider le démon SSSD pour n'autoriser QUE le groupe des administrateurs Tier 0 à s'y connecter en SSH.
 
-## Objectifs
-- Configurer auditd pour surveiller les actions critiques
-- Analyser les événements d'audit
-- Mettre en place une politique de journalisation
+## **Le Prérequis (La résolution DNS)**
 
-## Durée estimée : 45 minutes
+Pour qu'un Linux rejoigne un domaine Microsoft, il doit impérativement utiliser le Contrôleur de Domaine (DC) comme serveur DNS principal, afin de trouver les enregistrements de service Kerberos et LDAP (`_ldap._tcp.dc._msdcs...`).
 
-## Exercice 1 — Règles d'audit
+Sur votre machine **Ubuntu**, modifiez le résolveur DNS :  
+sudo nano /etc/systemd/resolved.conf
 
-1. Configurez auditd pour surveiller :
-   - Toute modification de `/etc/passwd`, `/etc/shadow`, `/etc/group`
-   - Toute utilisation de `sudo`
-   - Toute connexion SSH réussie ou échouée
-   - Les exécutions de commandes par root
-2. Rechargez les règles et vérifiez qu'elles sont actives
+1. 
 
-## Exercice 2 — Génération d'événements
+Décommentez et modifiez la ligne `DNS=` pour y mettre l'adresse IP de votre Contrôleur de Domaine Windows :  
+DNS=192.168.1.50   \# \<--- REMPLACEZ PAR L'IP DE VOTRE DC WINDOWS
 
-1. Effectuez plusieurs opérations (ajouter un utilisateur, utiliser sudo, modifier un fichier surveillé)
-2. Retrouvez ces événements dans les logs avec `ausearch`
-3. Générez un rapport HTML des authentifications du jour
+Domains=formation.local
 
-## Exercice 3 — Détection d'intrusion
+Sauvegardez et relancez le service DNS local :  
+sudo systemctl restart systemd-resolved
 
-1. Tentez de modifier `/etc/shadow` directement
-2. Identifiez dans les logs la tentative avec les détails complets (PID, UID, commande)
-3. Écrivez un script qui parse les logs d'audit et alerte sur les activités suspectes
+**Crash-Test DNS :** Vérifiez que Linux trouve le domaine :  
+ping \-c 2 formation.local
 
-## Exercice 4 — Rétention des logs
+*(Si cela ne répond pas, ne passez pas à la suite, la jonction échouera).*
 
-1. Configurez `logrotate` pour les logs d'audit : rotation hebdomadaire, 52 semaines
-2. Calculez l'espace disque nécessaire pour 1 an de logs
-3. Configurez une alerte si l'espace des logs dépasse 80% de la partition
+## **Installation des Moteurs de Jonction**
+
+Nous allons utiliser `realmd` (un outil qui automatise la configuration) et `SSSD` (le moteur de cache et de communication AD).
+
+Installez les paquets requis :  
+sudo apt-get update
+
+sudo apt-get install realmd sssd sssd-tools libnss-sss libpam-sss adcli samba-common-bin oddjob oddjob-mkhomedir packagekit \-y
+
+1. 
+
+Lancez une découverte du domaine pour vérifier que `realmd` voit bien l'Active Directory :  
+realm discover formation.local
+
+2. *(Le terminal doit afficher les détails du domaine, avec `configured: no`).*
+
+## **La Jonction au Domaine (Le Ticket Kerberos)**
+
+Lancez la commande de jonction en utilisant le compte Administrateur du domaine Windows :  
+sudo realm join \-U Administrateur formation.local
+
+1.   
+2. Tapez le mot de passe de l'Administrateur du domaine Windows.
+
+Vérifiez la réussite de la jonction :  
+realm list
+
+3. *(Vous devez voir `configured: kerberos-member` et `login-policy: allow-realm-logins`).*
+
+## **Le Verrouillage ANSSI (Modèle en Tiers)**
+
+Par défaut, l'outil a laissé la porte grande ouverte (tous les utilisateurs du domaine Windows peuvent se connecter). C'est une faille de sécurité majeure (Rupture du Tiering). Nous allons refermer cette porte et filtrer par groupe.
+
+**Fermeture globale :** On interdit l'accès à tout le domaine par défaut :  
+sudo realm deny \--all
+
+1. 
+
+On autorise EXCLUSIVEMENT le groupe de sécurité des administrateurs (ex: `Admins_LAPS_Tier0` ou `Domain Admins`). *Attention à bien respecter la casse du groupe AD :*  
+sudo realm permit \-g "Domain Admins@formation.local"
+
+2. *(Si vous avez créé le groupe `Admins_LAPS_Tier0` hier, utilisez celui-ci).*
+
+## **Création des profils et Élévation de privilèges (Sudo)**
+
+Quand un utilisateur AD va se connecter, Linux doit lui créer un dossier personnel `/home/...` automatiquement, et lui donner (ou non) les droits d'administration.
+
+**Automatiser la création du dossier `home` (via PAM) :**  
+sudo pam-auth-update \--enable mkhomedir
+
+1. 
+
+**Déléguer les droits `sudo` au groupe AD (Le Mapping) :** Nous allons lier le groupe de l'Active Directory aux privilèges root locaux. Créez un fichier dédié dans `sudoers` :  
+sudo nano /etc/sudoers.d/ad\_admins
+
+2. 
+
+Ajoutez cette ligne exacte :  
+%Domain\\ Admins@formation.local ALL=(ALL:ALL) ALL
+
+3. *(Ou `%Admins_LAPS_Tier0@formation.local ALL=(ALL:ALL) ALL` selon votre choix).*  
+4. Sauvegardez et quittez.
+
+## **Le Crash-Test d'Architecture**
+
+Votre Bastion Linux est maintenant un actif hybride. On va valider que le moteur SSSD fait bien son travail de filtrage.
+
+1. **Sur le Windows Server :** Ouvrez une invite PowerShell en utilisant un **utilisateur AD standard** (créez-en un si besoin, ex: `pirate`).
+
+Tentez de vous connecter en SSH sur le Bastion Linux :  
+ssh pirate@formation.local@\<IP\_UBUNTU\>
+
+2. *La connexion doit être rejetée (Access Denied / Permission denied). SSSD a bien vu que l'utilisateur existe dans l'AD, mais qu'il n'est pas dans la liste d'autorisation `realm permit`.*
+
+**test:** Connectez-vous en SSH avec le compte **Administrateur** du domaine :  
+ssh Administrateur@formation.local@\<IP\_UBUNTU\>
+
+*RÉSULTAT : La session s'ouvre, le dossier home est créé (`Creating directory /home/Administrateur@formation.local`).*
+
+Tapez `sudo su -` et retapez le mot de passe AD. Vous devenez `root`.
+

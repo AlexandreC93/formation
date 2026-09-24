@@ -1,89 +1,71 @@
----
-title: Audit Système & Journalisation
----
+# **Intégration AD du Bastion Linux (SSSD & Tiering)**
 
-# Audit Système & Journalisation (auditd)
+**Objectifs :**
 
-## auditd — Le système d'audit Linux
+* Comprendre l'intérêt de la centralisation des identités pour les systèmes Linux.  
+* Maîtriser l'architecture de SSSD (Kerberos \+ LDAP).  
+* Éviter le piège de la rupture de Tiering lors de la jonction d'un Linux au Domaine.  
+* Restreindre les accès SSH via les groupes Active Directory.
 
-```bash
-# Installation et démarrage
-apt install auditd audispd-plugins -y
-systemctl enable auditd && systemctl start auditd
+## **1\. Pourquoi joindre un Linux à l'Active Directory ?**
 
-# Configuration
-cat /etc/audit/auditd.conf | grep -E 'log_file|max_log|num_logs|space_left'
+Dans une infrastructure moderne, la gestion des comptes locaux sur les serveurs Linux (/etc/shadow) est un cauchemar d'audit et de sécurité.
 
-# Lister les règles actives
-auditctl -l
-auditctl -s  # Statistiques du démon
-```
+* **La désynchronisation :** Lorsqu'un administrateur quitte l'entreprise, son compte AD est désactivé, mais son compte local sur le serveur Linux reste souvent actif. C'est un compte orphelin (vecteur d'attaque majeur).  
+* **La traçabilité (SOC) :** Si tout le monde se connecte avec le compte générique root ou admin\_linux, il est impossible de savoir *qui* a réellement tapé une commande.  
+* **La solution :** Connecter le Linux à l'Active Directory. L'utilisateur utilise son compte Windows (jdupont) pour se connecter en SSH au serveur Linux. S'il quitte l'entreprise, la désactivation de son compte AD lui coupe instantanément l'accès aux serveurs Linux.
 
-## Règles d'audit
+## **2\. Comment un Linux "parle" à un Windows**
 
-```bash
-# Surveiller les fichiers sensibles
-auditctl -w /etc/passwd -p wa -k identity-changes
-auditctl -w /etc/shadow -p wa -k identity-changes
-auditctl -w /etc/sudoers -p wa -k sudoers-changes
-auditctl -w /etc/ssh/sshd_config -p wa -k ssh-config
+Le standard de l'industrie (poussé par RedHat, Ubuntu et l'ANSSI) est **SSSD** (System Security Services Daemon).
 
-# Règles permanentes
-cat > /etc/audit/rules.d/formation.rules << 'EOF'
--w /etc/passwd -p wa -k identity-changes
--w /etc/shadow -p wa -k identity-changes
--w /etc/group -p wa -k identity-changes
--w /etc/sudoers -p wa -k sudoers-changes
--w /etc/ssh/ -p wa -k ssh-config
--w /root/.ssh/ -p wa -k root-ssh
+### **2.1 Les deux piliers de l'authentification**
 
--a always,exit -F arch=b64 -S execve -F uid>=1000 -k user-exec
--a always,exit -F arch=b64 -S execve -F uid=0 -k root-exec
+Contrairement à Windows qui gère tout de manière opaque, Linux sépare strictement l'identité de l'authentification :
 
--a always,exit -F arch=b64 -S open -F exit=-EACCES -k access-denied
--a always,exit -F arch=b64 -S open -F exit=-EPERM -k access-denied
+1. **L'Identité (Qui êtes-vous ?) \- Protocole LDAP :**  
+   SSSD va interroger le Contrôleur de Domaine (DC) en LDAP pour récupérer le profil de l'utilisateur (Son nom, son UID, les groupes AD auxquels il appartient).  
+2. **L'Authentification (Prouvez-le) \- Protocole Kerberos :**  
+   Linux ne va *jamais* envoyer votre mot de passe en clair. SSSD contacte le KDC (Key Distribution Center) de l'Active Directory. Si le mot de passe est bon, le DC renvoie un **Ticket Kerberos (TGT)** au Linux.
 
--w /etc/hosts -p wa -k hosts-changes
--w /etc/network/ -p wa -k network-changes
+### **2.2 L'avantage de SSSD (Le Cache hors ligne)**
 
-# Immutable
--e 2
-EOF
+SSSD possède une base de données de cache locale. Si le Contrôleur de Domaine tombe en panne ou que le lien réseau est coupé, l'administrateur peut toujours se connecter au serveur Linux avec son compte AD : SSSD validera l'accès grâce au cache (empreintes) conservé localement, garantissant la résilience du Bastion.
 
-augenrules --load
-```
+## **3\. La Rupture du Modèle en Tiers**
 
-## Recherche et analyse dans les logs
+**Le postulat :** Vous intégrez un serveur Linux hautement sécurisé (un Bastion, Tier 0\) dans votre Active Directory.
 
-```bash
-# Recherche par clé
-ausearch -k identity-changes
-ausearch -k sudoers-changes --ts today
+**Le problème par défaut :** Dès que le Linux est joint au domaine, **tous les utilisateurs de l'AD** (ou a minima tous les Admins du Domaine) ont techniquement la possibilité d'essayer de s'y connecter en SSH.
 
-# Recherche par utilisateur
-ausearch -ui 1000 -ts today
-ausearch -ul username
+### **3.1 La violation des chemins de contrôle**
 
-# Rapports pré-formatés
-aureport --auth
-aureport --exec
-aureport --failed
-aureport --key identity-changes
+Si le groupe "Admins du Domaine" (Tier 0\) utilise le Bastion Linux, mais que le support Helpdesk (Tier 2\) a également le droit d'ouvrir une session SSH sur ce Linux (même sans droits sudo), le modèle en Tiers est rompu.
 
-# Format lisible
-auditd -l -i
-```
+Un attaquant ayant compromis le Tier 2 pourrait rebondir sur le Linux, scanner la mémoire et y trouver les tickets Kerberos (ou frapper la socket SSH) des administrateurs Tier 0\.
 
-## Centralisation des logs (rsyslog)
+### **3.2 L'Exigence : Le filtrage des ouvertures de session (Logon Rights)**
 
-```bash
-# Envoyer les logs vers un serveur central
-cat >> /etc/rsyslog.conf << 'EOF'
-$DefaultNetstreamDriver gtls
-$DefaultNetstreamDriverCAFile /etc/ssl/certs/ca.crt
-$ActionSendStreamDriverMode 1
-*.* @@(o)siem.example.com:6514
-EOF
+La sécurité exige que le moteur SSSD du serveur Linux soit bridé :
 
-systemctl restart rsyslog
-```
+Il ne doit interroger l'AD **QUE** pour valider un groupe de sécurité extrêmement précis.
+
+*Exemple de restriction stricte dans sshd\_config ou SSSD :*
+
+Autoriser uniquement le groupe Admins\_LAPS\_Tier0. Toute autre tentative (même par l'Administrateur du Domaine natif) sera rejetée au niveau du module PAM (Pluggable Authentication Modules), avant même la vérification du mot de passe.
+
+## **4\. Délégation des privilèges (Sudoers via AD)**
+
+Une fois l'utilisateur AD autorisé à se connecter, quels sont ses droits sur le Linux ?
+
+Par défaut : aucun. C'est un utilisateur standard.
+
+Pour lui donner les droits d'administration, on ne modifie pas son compte local. On crée une liaison (Mapping) entre un groupe de sécurité Active Directory et le fichier /etc/sudoers de Linux.
+
+*Exemple de configuration dans le sudoers :*
+
+%Admins\_LAPS\_Tier0@formation.local ALL=(ALL:ALL) ALL
+
+**Conclusion de la séquence :**
+
+Grâce à SSSD, PAM et SSH, le serveur Linux devient une extension naturelle de l'Active Directory, tout en respectant un cloisonnement beaucoup plus strict et granulaire qu'un serveur Windows standard. L'hygiène des comptes est parfaite, et le SOC dispose d'une traçabilité centralisée (Syslog) associant les actions Linux aux identités AD.
