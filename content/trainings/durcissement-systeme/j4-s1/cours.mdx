@@ -1,102 +1,80 @@
----
-title: Durcissement SELinux & AppArmor
----
+# ***SOC \- Sysmon et Traçabilité Hybride***
 
-# Durcissement SELinux & AppArmor
+***Objectifs :***
 
-## SELinux — Security-Enhanced Linux
+* *Comprendre les angles morts (Blind spots) de la journalisation Windows native.*  
+* *Déployer et configurer System Monitor (Sysmon) avec un filtrage chirurgical (SwiftOnSecurity).*  
+* *Comprendre l'architecture de collecte croisée (Windows vers SIEM Linux).*  
+* *Identifier les événements critiques de compromission (Event IDs) traqués par l'ANSSI.*
 
-SELinux implémente le **Mandatory Access Control (MAC)** : les accès sont définis par des politiques centrales, indépendamment des permissions UNIX classiques.
+## ***1\. Les limites de la journalisation Windows Native***
 
-```bash
-# État SELinux
-getenforce           # Enforcing / Permissive / Disabled
-setenforce 1         # Activer l'application (Enforcing)
-setenforce 0         # Mode permissif (log sans bloquer)
+*Par défaut, l'Observateur d'événements de Windows (Event Viewer) est conçu pour le dépannage informatique (Troubleshooting), pas pour la traque de cyberattaques (Threat Hunting).*
 
-# Mode persistant
-cat /etc/selinux/config
+### ***1.1 L'aveuglement face au "Living off the Land" (LotL)***
 
-# Contextes SELinux
-ls -lZ /var/www/html/
-ps auxZ | grep nginx
-id -Z  # Contexte de l'utilisateur courant
+*Si un attaquant utilise une macro Word pour lancer PowerShell de manière furtive et télécharger un ransomware, voici ce que voit le journal de sécurité Windows natif (Event ID 4688 \- Process Creation) :*
 
-# Modifier le contexte d'un fichier
-chcon -t httpd_sys_content_t /var/www/html/mon-fichier.html
-semanage fcontext -a -t httpd_sys_content_t '/opt/webapp(/.*)?'
-restorecon -Rv /opt/webapp/
-```
+* *Un processus `powershell.exe` a été lancé.*
 
-## Gestion des booléens SELinux
+***Ce qu'il manque :***
 
-```bash
-# Lister les booléens
-getsebool -a | grep httpd
+* *La ligne de commande exacte (les arguments étaient-ils obfusqués en Base64 ?).*  
+* *Le hash cryptographique (SHA256) de l'exécutable.*  
+* *Le parent exact (Est-ce `explorer.exe` ou `winword.exe` qui a lancé PowerShell ?).*
 
-# Activer un booléen (persistant)
-setsebool -P httpd_can_network_connect on
-setsebool -P httpd_can_sendmail on
-setsebool -P httpd_enable_homedirs on
-```
+## ***2\. Sysmon***
 
-## Analyse des refus SELinux
+***Sysmon (System Monitor)** est un service système et un pilote de périphérique (Driver). Une fois installé, il reste résident à travers les redémarrages et enregistre l'activité du système dans le journal d'événements Windows avec un niveau de détail chirurgical.*
 
-```bash
-# Voir les refus (AVC = Access Vector Cache)
-audit2why < /var/log/audit/audit.log | tail -30
-audit2allow < /var/log/audit/audit.log
+### 
 
-# Recherche spécifique
-ausearch -m avc -ts today
-ausearch -m avc -c nginx --ts today
+### ***2.1 Le fonctionnement bas niveau (Driver)***
 
-# Générer un module de politique depuis les refus
-audit2allow -M mon-nginx < /var/log/audit/audit.log
-semodule -i mon-nginx.pp
+*Contrairement à un logiciel classique qui "écoute", Sysmon s'insère directement dans le noyau Windows (Ring 0\) via des Callouts et des Minifilters. Il intercepte les appels système (Syscalls) avant même qu'ils ne soient traités, ce qui le rend très difficile à aveugler pour un attaquant standard.*
 
-# Troubleshoot
-sealert -a /var/log/audit/audit.log
-```
+### ***2.2 La nécessité du Filtrage (Le profil SwiftOnSecurity)***
 
-## AppArmor — Ubuntu/Debian
+*Si l'on installe Sysmon sans configuration, il va générer des dizaines de milliers d'événements par minute (chaque connexion réseau, chaque fichier lu). Cela va écrouler le serveur et saturer le SIEM (SOC).*
 
-```bash
-# État AppArmor
-apparmor_status
-aa-status
+*L'architecture nécessite un fichier de configuration XML pour filtrer le bruit légitime. Le standard de l'industrie est la configuration **SwiftOnSecurity**  :*
 
-# Profils disponibles
-ls /etc/apparmor.d/
+* *Elle **exclut** le bruit de fond (ex: les requêtes DNS de Windows Update, les connexions réseau de Spotify ou OneDrive).*  
+* *Elle **inclut** spécifiquement les comportements suspects (ex: `cmd.exe` lançant `powershell.exe`, création de fichiers `.exe` dans le dossier `C:\Users\Public`).*
 
-# Charger / décharger un profil
-apparmor_parser -r /etc/apparmor.d/usr.sbin.nginx
-aa-enforce /etc/apparmor.d/usr.sbin.nginx
-aa-complain /etc/apparmor.d/usr.sbin.nginx  # Mode log sans bloquer
+## ***3\. Centralisation des Logs***
 
-# Exemple de profil AppArmor pour nginx
-cat > /etc/apparmor.d/usr.sbin.nginx << 'EOF'
-#include <tunables/global>
+*L'ANSSI est formelle : **"Un journal stocké uniquement sur la machine qui l'a généré n'a aucune valeur de sécurité"**. Si un attaquant devient Administrateur du Domaine, sa première action sera de taper `wevtutil cl Security` pour vider les journaux.*
 
-/usr/sbin/nginx flags=(attach_disconnected) {
-  #include <abstractions/base>
-  #include <abstractions/nameservice>
+### ***3.1 La collecte croisée (Cross-Platform)***
 
-  capability net_bind_service,
-  capability setuid,
-  capability setgid,
+*Dans un environnement moderne, le Bastion d'administration ou le collecteur SOC (SIEM) tourne souvent sous Linux (Splunk, ELK, QRadar, Rsyslog).*
 
-  /usr/sbin/nginx mr,
-  /etc/nginx/** r,
-  /var/log/nginx/** rw,
-  /var/www/html/** r,
-  /run/nginx.pid rw,
+*Windows parle en XML/EventLog, Linux parle en Syslog/JSON. **La solution :** L'utilisation d'un agent de transfert léger (Forwarder) comme **NXLog**, **Winlogbeat** ou **Splunk Universal Forwarder** sur le serveur Windows.*
 
-  deny /etc/passwd r,
-  deny /etc/shadow r,
-}
-EOF
+1. *Sysmon génère l'alerte sur le Contrôleur de Domaine (Windows).*  
+2. *L'agent (ex: NXLog) capte l'alerte, la convertit en format JSON (structuré).*  
+3. *L'agent l'envoie de manière chiffrée (TLS) vers le collecteur Syslog du serveur Linux.*  
+4. *L'attaquant détruit le Contrôleur de Domaine, mais la preuve est déjà en sécurité sur le Bastion Linux.*
 
-apparmor_parser -r /etc/apparmor.d/usr.sbin.nginx
-aa-status | grep nginx
-```
+## ***4\. hreat Hunter (Les Event IDs Sysmon)***
+
+*Une fois Sysmon déployé (dans `Journaux des applications et des services > Microsoft > Windows > Sysmon > Operational`), l'analyste SOC traque des identifiants d'événements (Event ID) très spécifiques :*
+
+* ***Event ID 1 : Process Creation (Le Saint Graal)***  
+  * *Fournit la ligne de commande complète, le hachage SHA256 (pour vérifier sur VirusTotal) et le GUID du processus parent.*  
+  * *Cas d'usage : Détecter une commande encodée en Base64 passée à `powershell.exe -e`.*  
+* ***Event ID 3 : Network Connection***  
+  * *Associe une connexion TCP/UDP à un processus précis.*  
+  * *Cas d'usage : Détecter la calculatrice (`calc.exe`) ou un processus système (`lsass.exe`) qui tente de se connecter à une adresse IP externe en Russie.*  
+* ***Event ID 8 : CreateRemoteThread***  
+  * *Détecte lorsqu'un processus A injecte du code dans la mémoire du processus B.*  
+  * *Cas d'usage : C'est la technique reine des malwares (Cobalt Strike, Mimikatz) pour se cacher dans `explorer.exe` (Fileless Malware).*  
+* ***Event ID 11 : FileCreate***  
+  * *Détecte la création de fichiers. Utile si filtré sur les dossiers à risque (ex: le dossier de démarrage ou `C:\Windows\Temp`).*  
+* ***Event ID 22 : DNSEvent***  
+  * *Enregistre les requêtes DNS (Résolution de noms).*  
+  * *Cas d'usage : Détecter un ransomware qui tente de contacter son serveur de commande (C2) généré aléatoirement (DGA).*
+
+*Le durcissement prévient l'attaque, mais Sysmon permet de réagir lorsque la prévention a échoué.*
+
