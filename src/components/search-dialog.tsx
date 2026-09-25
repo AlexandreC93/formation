@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { Search, Loader2, BookOpen, FlaskConical, CheckCircle } from 'lucide-react';
+import { Search, Loader2, BookOpen, FlaskConical, CheckCircle, X } from 'lucide-react';
 
 interface SearchResult {
   day: number;
@@ -69,7 +69,7 @@ export function SearchDialog({ isOpen, onClose }: { isOpen: boolean; onClose: ()
         setSelectedIndex((prev) => (prev - 1 + results.length) % (results.length || 1));
       } else if (e.key === 'Enter' && results.length > 0) {
         e.preventDefault();
-        const url = results[selectedIndex].url;
+        const url = `${results[selectedIndex].url}&highlight=${encodeURIComponent(query)}`;
         router.push(url);
         onClose();
       } else if (e.key === 'Escape') {
@@ -85,16 +85,16 @@ export function SearchDialog({ isOpen, onClose }: { isOpen: boolean; onClose: ()
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] sm:pt-[20vh]">
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-start justify-center pt-16 sm:pt-24 px-4">
       <div 
-        className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm transition-opacity" 
+        className="absolute inset-0 transition-opacity" 
         onClick={onClose}
       />
       
-      <div className="relative w-full max-w-xl mx-4 bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-white/10 overflow-hidden flex flex-col max-h-[60vh] sm:max-h-[70vh]">
+      <div className="relative w-full max-w-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[80vh]">
         
         {/* Input */}
-        <div className="flex items-center px-4 py-3 border-b border-slate-200 dark:border-white/10">
+        <div className="flex items-center px-4 py-4 border-b border-slate-200 dark:border-white/10">
           <Search className="w-5 h-5 text-slate-400 mr-3 shrink-0" />
           <input
             ref={inputRef}
@@ -104,14 +104,26 @@ export function SearchDialog({ isOpen, onClose }: { isOpen: boolean; onClose: ()
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
-          {loading && <Loader2 className="w-4 h-4 text-indigo-500 animate-spin shrink-0 ml-3" />}
-          <div className="hidden sm:flex items-center gap-1 ml-3">
-            <kbd className="px-2 py-0.5 text-[10px] font-medium text-slate-500 bg-slate-100 dark:bg-white/5 rounded border border-slate-200 dark:border-white/10">ESC</kbd>
+          {loading && <Loader2 className="w-5 h-5 text-indigo-500 animate-spin shrink-0 mx-2" />}
+          
+          {query.length > 0 && (
+            <button 
+              onClick={() => setQuery('')}
+              className="p-1 mr-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors rounded-md"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+
+          <div className="hidden sm:flex items-center gap-1 ml-2">
+            <kbd className="px-2 py-0.5 text-xs font-medium text-slate-400 bg-slate-100 dark:bg-white/5 rounded-md border border-slate-200 dark:border-white/10">
+              ESC
+            </kbd>
           </div>
         </div>
 
         {/* Results */}
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
           {query.trim().length > 0 && query.trim().length < 2 && (
             <div className="px-4 py-8 text-center text-sm text-slate-500">
               Tapez au moins 2 caractères pour rechercher...
@@ -126,64 +138,75 @@ export function SearchDialog({ isOpen, onClose }: { isOpen: boolean; onClose: ()
           )}
 
           {results.length > 0 && (
-            <div className="py-2">
+            <>
               {results.map((result, index) => {
                 const isSelected = index === selectedIndex;
                 let Icon = BookOpen;
                 let tabLabel = 'Cours';
-                let iconColor = 'text-indigo-400';
+                let iconColor = 'text-indigo-500';
+                let badgeBg = 'bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300';
                 
                 if (result.tab === 'tp') {
                   Icon = FlaskConical;
                   tabLabel = 'TP';
-                  iconColor = 'text-amber-400';
+                  iconColor = 'text-amber-500';
+                  badgeBg = 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300';
                 } else if (result.tab === 'corrige') {
                   Icon = CheckCircle;
                   tabLabel = 'Corrigé';
-                  iconColor = 'text-emerald-400';
+                  iconColor = 'text-emerald-500';
+                  badgeBg = 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300';
                 }
+
+                // Surlignage simple du mot-clé dans le snippet
+                const parts = result.snippet.split(new RegExp(`(${query})`, 'gi'));
 
                 return (
                   <button
                     key={`${result.day}-${result.seg}-${result.tab}`}
                     onMouseEnter={() => setSelectedIndex(index)}
                     onClick={() => {
-                      router.push(result.url);
+                      const url = `${result.url}&highlight=${encodeURIComponent(query)}`;
+                      router.push(url);
                       onClose();
                     }}
                     className={`
-                      w-full text-left px-4 py-3 flex items-start gap-3 transition-colors
-                      ${isSelected ? 'bg-indigo-50 dark:bg-indigo-500/10' : 'hover:bg-slate-50 dark:hover:bg-white/5'}
+                      w-full text-left px-4 py-3 flex items-start gap-3 transition-colors rounded-xl
+                      ${isSelected ? 'bg-slate-100 dark:bg-slate-800/80' : 'hover:bg-slate-50 dark:hover:bg-white/5'}
                     `}
                   >
-                    <div className={`mt-0.5 flex items-center justify-center w-8 h-8 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-white/10 shrink-0 shadow-sm ${isSelected ? 'border-indigo-200 dark:border-indigo-500/30' : ''}`}>
-                      <Icon className={`w-4 h-4 ${iconColor}`} />
+                    <div className="mt-0.5 flex items-center justify-center shrink-0">
+                      <Icon className={`w-5 h-5 ${iconColor}`} />
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1">
-                        <span className="text-xs font-bold text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wider">
+                        <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-white/10 px-1.5 py-0.5 rounded uppercase tracking-wider">
                           J{result.day} S{result.seg}
+                        </span>
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase ${badgeBg}`}>
+                          {tabLabel}
                         </span>
                         <span className="text-sm font-semibold text-slate-900 dark:text-white truncate">
                           {result.title}
                         </span>
-                        <span className="text-[10px] uppercase font-bold text-slate-400 border border-slate-200 dark:border-white/10 px-1.5 py-0.5 rounded">
-                          {tabLabel}
-                        </span>
                       </div>
-                      <p className="text-xs text-slate-600 dark:text-slate-400 truncate opacity-90">
-                        {result.snippet}
+                      <p className="text-sm text-slate-600 dark:text-slate-400 truncate opacity-90">
+                        {parts.map((part, i) => 
+                          part.toLowerCase() === query.toLowerCase() 
+                            ? <span key={i} className="text-amber-500 font-semibold">{part}</span> 
+                            : part
+                        )}
                       </p>
                     </div>
                   </button>
                 );
               })}
-            </div>
+            </>
           )}
         </div>
 
         {/* Footer */}
-        <div className="px-4 py-2 bg-slate-50 dark:bg-slate-900/50 border-t border-slate-200 dark:border-white/5 flex items-center gap-4 text-xs text-slate-500">
+        <div className="px-4 py-3 bg-slate-50 dark:bg-slate-900/80 border-t border-slate-200 dark:border-white/5 flex items-center gap-6 text-xs text-slate-500">
           <div className="flex items-center gap-1.5">
             <kbd className="px-1.5 py-0.5 font-medium bg-slate-200 dark:bg-slate-800 rounded">↑</kbd>
             <kbd className="px-1.5 py-0.5 font-medium bg-slate-200 dark:bg-slate-800 rounded">↓</kbd>
@@ -192,6 +215,10 @@ export function SearchDialog({ isOpen, onClose }: { isOpen: boolean; onClose: ()
           <div className="flex items-center gap-1.5">
             <kbd className="px-1.5 py-0.5 font-medium bg-slate-200 dark:bg-slate-800 rounded">↵</kbd>
             <span>Ouvrir</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <kbd className="px-1.5 py-0.5 font-medium bg-slate-200 dark:bg-slate-800 rounded">Échap</kbd>
+            <span>Fermer</span>
           </div>
         </div>
 

@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import { BookOpen, FlaskConical, Lock, CheckCircle, FileText } from 'lucide-react';
 import { MdxContent } from './mdx-content';
+import { HighlightWrapper } from './highlight-wrapper';
+import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import type { JSX } from 'react';
 import type { MdxResult } from '@/lib/mdx';
 
@@ -27,7 +29,11 @@ function RenderMdxOrError({ result }: { result: MdxResult }) {
     );
   }
   if (result.content) {
-    return <MdxContent content={result.content} />;
+    return (
+      <HighlightWrapper>
+        <MdxContent content={result.content} />
+      </HighlightWrapper>
+    );
   }
   return null;
 }
@@ -40,7 +46,21 @@ export function SegmentTabs({
   hasPdf,
   pdfUrlBase,
 }: SegmentTabsProps) {
-  const [activeTab, setActiveTab] = useState<Tab>('cours');
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+  
+  const initialTab = (searchParams.get('tab') as Tab) || 'cours';
+  const [activeTab, setActiveTab] = useState<Tab>(
+    ['cours', 'tp', 'corrige'].includes(initialTab) ? initialTab : 'cours'
+  );
+
+  const handleTabChange = (id: Tab) => {
+    setActiveTab(id);
+    const params = new URLSearchParams(searchParams);
+    params.set('tab', id);
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  };
 
   const tabs: Array<{ id: Tab; label: string; icon: typeof BookOpen }> = [
     { id: 'cours', label: 'Cours', icon: BookOpen },
@@ -65,7 +85,7 @@ export function SegmentTabs({
             {tabs.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
-                onClick={() => setActiveTab(id)}
+                onClick={() => handleTabChange(id)}
                 className={`
                   flex items-center justify-center gap-2 px-4 py-3 min-w-[100px] min-h-[44px] text-sm font-medium rounded-t-lg transition-all duration-200 relative whitespace-nowrap
                   ${
