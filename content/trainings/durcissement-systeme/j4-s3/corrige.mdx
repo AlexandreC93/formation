@@ -1,99 +1,53 @@
----
-title: Corrigé — Durcissement CIS
----
+# **Corrigé du TP : Déploiement de JEA (Just Enough Administration)**
 
-# Corrigé — Durcissement CIS Benchmark
+## **Préparation de l'environnement (Groupes et Répertoires)**
 
-## Exercice 1
+**Commandes exécutées :**
 
-```bash
-apt install lynis -y
-lynis audit system 2>&1 | tee /tmp/lynis-initial.log
-grep 'Hardening index' /tmp/lynis-initial.log
-grep 'Suggestion' /var/log/lynis.log | head -10
-```
+* New-ADGroup \-Name "JEA\_DNS\_Admins" \-GroupCategory Security \-GroupScope Global  
+* Add-ADGroupMember \-Identity "JEA\_DNS\_Admins" \-Members "pirate"  
+* New-Item \-Path "C:\\JEA\_Transcripts" \-ItemType Directory
 
-## Exercice 2
+**Explication :** L'architecture JEA repose sur les identités Active Directory existantes. L'utilisateur `pirate` reste un utilisateur standard du domaine sans aucun droit d'administration. Le répertoire créé servira de coffre-fort pour enregistrer toutes les actions effectuées via JEA, répondant ainsi aux exigences de traçabilité d'un SOC.
 
-```bash
-#!/bin/bash
-# CIS Level 1
+## **Création du fichier de Capacité de Rôle (.psrc)**
 
-# FS inutiles
-for mod in cramfs freevxfs jffs2 hfs hfsplus squashfs udf; do
-  echo "install $mod /bin/true" > /etc/modprobe.d/${mod}.conf
-done
+**Ligne modifiée dans le fichier `ManageDNS.psrc` :**
 
-# /tmp sécurisé
-if ! grep -q 'tmpfs.*nosuid' /etc/fstab; then
-  echo 'tmpfs /tmp tmpfs defaults,rw,nosuid,nodev,noexec,relatime 0 0' >> /etc/fstab
-fi
-mount -o remount /tmp 2>/dev/null || true
+* VisibleCmdlets \= @{ Name \= 'Restart-Service'; Parameters \= @{ Name \= 'Name'; ValidateSet \= 'dns' }}, @{ Name \= 'Get-Service'; Parameters \= @{ Name \= 'Name'; ValidateSet \= 'dns' }}
 
-# ASLR
-echo 'kernel.randomize_va_space = 2' > /etc/sysctl.d/01-aslr.conf
-sysctl -p /etc/sysctl.d/01-aslr.conf
+**Explication :** C'est la définition de la Liste Blanche (Whitelisting). Nous n'autorisons pas simplement la commande `Restart-Service`. Nous bridons ses paramètres (`ValidateSet = 'dns'`). Si le technicien tente d'exécuter `Restart-Service -Name spooler`, la commande sera rejetée par le moteur JEA, garantissant qu'il ne peut agir que sur son périmètre strict.
 
-# Réseau
-cat > /etc/sysctl.d/01-cis-network.conf << 'EOF'
-net.ipv4.ip_forward = 0
-net.ipv4.conf.all.rp_filter = 1
-net.ipv4.conf.default.rp_filter = 1
-net.ipv4.conf.all.accept_redirects = 0
-net.ipv4.conf.default.accept_redirects = 0
-net.ipv4.conf.all.send_redirects = 0
-net.ipv4.tcp_syncookies = 1
-net.ipv4.conf.all.log_martians = 1
-EOF
-sysctl -p /etc/sysctl.d/01-cis-network.conf
+## **Création du fichier de Configuration de Session (.pssc)**
 
-# Hash root
-grep '^root:' /etc/shadow
-```
+**Commande exécutée :**
 
-## Exercice 3 — PAM
+* New-PSSessionConfigurationFile \-Path "C:\\JEA\_Config.pssc" \-SessionType RestrictedRemoteServer \-RunAsVirtualAccount \$true \-TranscriptDirectory "C:\\JEA\_Transcripts" \-RoleDefinitions @{ 'formation\\JEA\_DNS\_Admins' \= @{ RoleCapabilities \= 'ManageDNS' } }
 
-```bash
-apt install libpam-pwquality libpam-pwhistory -y
+**Explication de l'architecture :**
 
-cat > /etc/security/pwquality.conf << 'EOF'
-minlen = 14
-minclass = 4
-ucredit = -1
-dcredit = -1
-ocredit = -1
-lcredit = -1
-maxrepeat = 3
-EOF
+* `RestrictedRemoteServer` : Force la session PowerShell en mode contraint (Constrained Language Mode).  
+* `RunAsVirtualAccount $true` : C'est le cœur de JEA (L'exécution par procuration). L'utilisateur `pirate` ne verra jamais ses propres droits élevés. JEA créera un compte Administrateur Local "Fantôme" le temps de la session pour exécuter les commandes à sa place, puis le détruira.  
+* `RoleDefinitions` : Effectue le pont (Mapping) entre le groupe Active Directory standard et les droits accordés dans le fichier `.psrc`.
 
-# PAM password
-cat > /etc/pam.d/common-password << 'EOF'
-password requisite pam_pwquality.so retry=3
-password requisite pam_pwhistory.so remember=5 use_authtok
-password [success=1 default=ignore] pam_unix.so obscure sha512 rounds=65536 use_authtok
-password requisite pam_deny.so
-password required pam_permit.so
-EOF
+## **Enregistrement du point de terminaison JEA**
 
-# Verrouillage compte
-cat > /etc/pam.d/common-auth << 'EOF'
-auth required pam_faillock.so preauth silent audit deny=5 unlock_time=900
-auth [success=1 default=ignore] pam_unix.so nullok
-auth [default=die] pam_faillock.so authfail audit deny=5 unlock_time=900
-auth sufficient pam_faillock.so authsucc audit deny=5 unlock_time=900
-auth requisite pam_deny.so
-auth required pam_permit.so
-EOF
-```
+**Commandes exécutées :**
 
-## Exercice 4
+* Register-PSSessionConfiguration \-Name "DNS\_Maintenance" \-Path "C:\\JEA\_Config.pssc" \-Force  
+* Restart-Service WinRM
 
-```bash
-lynis audit system 2>&1 | tee /tmp/lynis-post.log
-grep 'Hardening index' /tmp/lynis-post.log
+**Explication :** Cette étape publie la configuration JEA sur le service de gestion à distance de Windows (WinRM). Le service réseau écoute désormais sur un nouveau "guichet" d'administration nommé `DNS_Maintenance`.
 
-echo "=== AVANT ==="
-grep 'Hardening index' /tmp/lynis-initial.log
-echo "=== APRES ==="
-grep 'Hardening index' /tmp/lynis-post.log
-```
+## **Validation et tests d'exécution (Le Crash-Test)**
+
+**Test de connexion :**
+
+* Enter-PSSession \-ComputerName localhost \-ConfigurationName "DNS\_Maintenance" \-Credential "formation\\pirate"
+
+**Analyse des résultats :**
+
+1. **L'environnement bridé :** Si vous avez tapé `Get-Command`, vous avez pu constater que la quasi-totalité des commandes système ont disparu de la session.  
+2. **Le Langage Contraint (CLM) :** La tentative d'exécuter du code .NET (`New-Object System.IO.FileInfo`) a échoué. JEA empêche l'exécution de code arbitraire et de malwares.  
+3. **Le fichier de Transcription :** En allant dans le dossier `C:\JEA_Transcripts` avec le compte Administrateur de la machine, vous avez trouvé un fichier texte. Ce fichier (Over-the-shoulder log) contient la retranscription exacte de toutes les commandes tapées, y compris les erreurs et les résultats affichés à l'écran de l'utilisateur `pirate`.  
+* 

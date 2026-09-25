@@ -1,138 +1,52 @@
----
-title: Corrigé — Configuration firewall
----
+# **Corrigé du TP : Intégration AD du Bastion Linux (SSSD & Tiering)**
 
-# Corrigé — Configuration firewall
+## **Le Prérequis Absolu (La résolution DNS)**
 
-## Exercice 1 — Ruleset nftables
+**Fichier modifié :** `/etc/systemd/resolved.conf` **Explication :** Sous Linux, l'authentification Active Directory ne fonctionne pas avec de simples adresses IP. Le démon `SSSD` utilise le protocole Kerberos (pour l'authentification) et LDAP (pour l'identité). Pour trouver le Contrôleur de Domaine, le Linux doit être capable de résoudre les enregistrements DNS spécifiques (les enregistrements SRV comme `_kerberos._tcp.formation.local`). Si le DNS ne pointe pas vers le DC Windows, la jonction est impossible.
 
-```bash
-cat > /etc/nftables-prod.conf << 'NFTEOF'
-#!/usr/sbin/nft -f
+## **La Jonction au Domaine**
 
-flush ruleset
+**Commande exécutée :**
 
-table inet filter {
-    chain input {
-        type filter hook input priority 0; policy drop;
-        
-        # Loopback
-        iifname "lo" accept comment "loopback"
-        
-        # Connexions établies et liées
-        ct state { established, related } accept
-        ct state invalid drop
-        
-        # SSH : réseau de gestion seulement
-        ip saddr 10.10.0.0/16 tcp dport 22 ct state new \
-          limit rate 5/minute accept comment "SSH management"
-        
-        # Web
-        tcp dport { 80, 443 } ct state new accept comment "HTTP/HTTPS"
-        
-        # ICMP ping limité
-        ip protocol icmp icmp type echo-request \
-          limit rate 5/second burst 10 packets accept
-        ip6 nexthdr icmpv6 icmpv6 type echo-request \
-          limit rate 5/second burst 10 packets accept
-        
-        # Log tous les refus
-        log prefix "[FIREWALL-DROP] " flags all counter drop
-    }
-    
-    chain forward {
-        type filter hook forward priority 0; policy drop;
-        log prefix "[FWD-DROP] " flags all counter drop
-    }
-    
-    chain output {
-        type filter hook output priority 0; policy accept;
-    }
-}
-NFTEOF
+* sudo realm join \-U Administrateur formation.local
 
-nft -f /etc/nftables-prod.conf
-nft list ruleset
-```
+* **Sous le capot :** L'outil `realmd` a automatisé plusieurs tâches complexes :  
+  1. Il a contacté le KDC (Key Distribution Center) du Contrôleur de Domaine pour obtenir un ticket Kerberos initial avec le compte Administrateur.  
+  2. Il a créé un objet "Ordinateur" (Computer) dans l'Active Directory, exactement comme si c'était un serveur Windows.  
+  3. Il a généré un fichier `/etc/krb5.keytab` contenant le secret partagé entre le Linux et le DC.  
+  4. Il a configuré `SSSD` pour router les demandes d'authentification vers le domaine Windows.
 
-## Exercice 2 — NAT
+## **Le Verrouillage ANSSI (Modèle en Tiers)**
 
-```bash
-# Activer le forwarding IP
-echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
-sysctl -p
+C'est l'étape la plus critique du TP pour la sécurité.
 
-# NAT masquerade pour 192.168.100.0/24
-nft add table ip nat
-nft add chain ip nat postrouting '{ type nat hook postrouting priority 100; }'
-nft add rule ip nat postrouting ip saddr 192.168.100.0/24 oifname "eth0" masquerade
+**Commandes exécutées :**
 
-# Redirection port 8080 -> 192.168.100.10:80
-nft add chain ip nat prerouting '{ type nat hook prerouting priority -100; }'
-nft add rule ip nat prerouting tcp dport 8080 dnat to 192.168.100.10:80
+* sudo realm deny \--all  
+* sudo realm permit \-g "Admins\_LAPS\_Tier0@formation.local"
 
-# Autoriser le forwarding pour ce flux
-nft add rule inet filter forward ip daddr 192.168.100.10 tcp dport 80 ct state new accept
-nft add rule inet filter forward ct state established,related accept
+* **Le problème de base (Rupture du Tiering) :** Par défaut, après un `realm join`, **tous** les utilisateurs de l'Active Directory ont le droit d'ouvrir une session SSH sur le Linux. Un simple comptable (Tier 2\) pourrait s'y connecter. Même sans droits d'administration, il aurait un accès au shell (Terminal) d'un serveur critique (Tier 0).  
+* **La solution SSSD :** La commande `deny --all` ferme la porte à tout le monde. La commande `permit` ajoute une exception stricte dans le fichier de configuration `/etc/sssd/sssd.conf`. Désormais, avant même de demander le mot de passe, SSSD vérifie si l'utilisateur appartient au groupe autorisé. Si ce n'est pas le cas, la connexion est rejetée net.
 
-nft list ruleset | grep -A5 nat
-```
+## **Création des profils et Élévation de privilèges (Sudo)**
 
-## Exercice 3 — fail2ban
+**Modification de :** `/etc/sudoers.d/ad_admins` **Ligne ajoutée :** `%Admins_LAPS_Tier0@formation.local ALL=(ALL:ALL) ALL`
 
-```bash
-# /etc/fail2ban/jail.local
-cat > /etc/fail2ban/jail.local << 'EOF'
-[DEFAULT]
-ignoreip = 127.0.0.1/8 10.10.0.0/16
-bantime  = 86400
-findtime = 600
-maxretry = 5
-backend = systemd
-action = %(action_mwl)s
+* **Explication du "Mapping" :** Les administrateurs AD se connectent sur le Linux en tant qu'utilisateurs standards. Pour leur donner le droit d'exécuter des commandes en tant que `root`, nous lions le groupe Active Directory au groupe `sudo` local.  
+* **La syntaxe :** Le `%` au début de la ligne indique au fichier `sudoers` qu'il s'agit d'un groupe (et non d'un utilisateur isolé).
 
-[sshd]
-enabled = true
-maxretry = 3
-bantime = 86400
+## **Le Crash-Test (Analyse des résultats)**
 
-[nginx-admin]
-enabled = true
-filter = nginx-admin
-port = http,https
-logpath = /var/log/nginx/access.log
-maxretry = 5
-bantime = 3600
-EOF
+### **1\. La tentative avec le compte standard (`pirate`)**
 
-# Filtre nginx admin
-cat > /etc/fail2ban/filter.d/nginx-admin.conf << 'EOF'
-[Definition]
-failregex = ^<HOST>.*"(GET|POST) /admin
-ignoreregex =
-EOF
+* **Résultat :** Le serveur Linux a refusé la connexion (soit en fermant la session immédiatement, soit avec un message `Permission denied`).  
+* **Conclusion :** Le verrouillage (Partie 4\) fonctionne parfaitement. Le module de sécurité PAM (Pluggable Authentication Modules) a interrogé SSSD, qui a interrogé l'AD. Le compte existe, mais il n'est pas dans le groupe autorisé. Le Tiering est respecté.
 
-systemctl restart fail2ban
-fail2ban-client status
+### **2\. La tentative avec le compte `Administrateur` du Domaine**
 
-# Simulation de brute-force (5 tentatives)
-for i in {1..5}; do
-  ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 fakeuser@127.0.0.1 2>/dev/null || true
-done
-fail2ban-client status sshd
-```
-
-## Exercice 4 — Audit
-
-```bash
-# Règles avec compteurs
-nft list ruleset -a | grep counter
-
-# Test depuis localhost
-curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:80
-nc -zv 127.0.0.1 22 2>&1
-
-# Export reproductible
-nft list ruleset > /etc/nftables-export-$(date +%Y%m%d).conf
-echo "Configuration exportée dans /etc/nftables-export-$(date +%Y%m%d).conf"
-```
+* **Résultat :** La session SSH s'est ouverte avec succès. Le système a affiché `Creating directory /home/Administrateur@formation.local`.  
+* **Conclusion :**  
+  * L'authentification Kerberos a fonctionné.  
+  * Le module PAM `mkhomedir` (activé en Partie 5\) a généré le répertoire personnel à la volée lors de la première connexion.  
+  * La commande `sudo su -` a réussi grâce au fichier `sudoers.d`, prouvant que l'élévation des privilèges est bien gérée de manière centralisée par votre forêt Active Directory.  
+* 

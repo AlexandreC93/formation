@@ -1,92 +1,40 @@
----
-title: Corrigé — Scan de vulnérabilités
----
+# **Corrigé du TP : Déploiement de BitLocker et Active Directory**
 
-# Corrigé — Scan de vulnérabilités
+## **Configuration de la Stratégie de Groupe (GPO)**
 
-## Exercice 1
+**Paramètres activés et justifiés :**
 
-```bash
-curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+* **Stocker les informations de récupération BitLocker dans les services de domaine Active Directory :** Ce paramètre ordonne au système de transmettre la clé de récupération (48 chiffres) au Contrôleur de Domaine plutôt que de laisser l'utilisateur la sauvegarder sur une clé USB non sécurisée.  
+* **Ne pas autoriser BitLocker à commencer le chiffrement tant que les informations de récupération ne sont pas stockées dans AD DS :** C'est le garde-fou absolu pour un architecte. Il garantit mathématiquement qu'aucun serveur ne sera chiffré si le Contrôleur de Domaine est injoignable ou si la sauvegarde de la clé a échoué. Cela évite le ransomware "auto-infligé" en cas de perte de la clé.  
+* **Autoriser BitLocker sans un module de plateforme sécurisée (TPM) compatible :** Ce paramètre est une exception nécessaire pour les environnements de laboratoire ou les anciennes machines virtuelles ne disposant pas de vTPM. Il permet d'utiliser un protecteur logiciel (mot de passe).
 
-trivy fs / -f json --severity CRITICAL -o /tmp/trivy-system.json 2>/dev/null
+## **Application sur la machine cible**
 
-python3 -c "
-import json
-with open('/tmp/trivy-system.json') as f:
-    data = json.load(f)
-for r in data.get('Results',[]):
-    for v in r.get('Vulnerabilities',[]):
-        if v.get('Severity')=='CRITICAL':
-            print(f\"{v['VulnerabilityID']} | {v['PkgName']} {v.get('InstalledVersion','?')} -> {v.get('FixedVersion','no fix')}\")
-" 2>/dev/null | head -20
-```
+**Commandes exécutées :**
 
-## Exercice 2
+* gpupdate /force  
+* Get-BitLockerVolume \-MountPoint "C:"
 
-```bash
-for img in nginx:latest python:3.9 alpine:latest; do
-  echo "=== $img ==="
-  COUNT=$(trivy image "$img" --severity CRITICAL --no-progress -f json 2>/dev/null | \
-    python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(len(r.get('Vulnerabilities',[])) for r in d.get('Results',[])))" 2>/dev/null || echo 0)
-  echo "CRITICAL: $COUNT"
-done
+**Explication :** Avant de lancer le chiffrement, il est impératif de forcer l'application de la GPO. Si le chiffrement est lancé avant la réception de la stratégie, la clé de secours ne sera pas envoyée à l'Active Directory, créant une vulnérabilité de type "perte de données".
 
-echo ""
-echo "Images alternatives recommandées :"
-echo " - nginx:alpine"
-echo " - gcr.io/distroless/python3"
-echo " - python:3.12-slim-bookworm"
-```
+## **Activation du Chiffrement**
 
-## Exercice 3
+**Commandes exécutées :**
 
-```bash
-apt update
-apt install unattended-upgrades -y
-unattended-upgrades --dry-run --debug 2>&1 | grep 'Packages that will be upgraded'
-unattended-upgrades -v
+* \$SecurePassword \= ConvertTo-SecureString "Formation2026\!" \-AsPlainText \-Force  
+* Enable-BitLocker \-MountPoint "C:" \-PasswordProtector \$SecurePassword \-RecoveryPasswordProtector \-EncryptionMethod XtsAes256 \-UsedSpaceOnly \-SkipHardwareTest
 
-# Vérification services
-systemctl --failed
-journalctl -p err -n 20 --since "10 min ago"
-```
+**Explication :**
 
-## Exercice 4 — Rapport HTML
+* `PasswordProtector` : On utilise le mot de passe comme clé de déverrouillage au démarrage (Ring 0\) en substitution du TPM.  
+* `RecoveryPasswordProtector` : Ordonne la création de la fameuse clé à 48 chiffres qui sera envoyée à l'AD.  
+* `XtsAes256` : C'est le standard de chiffrement recommandé par l'ANSSI pour les disques locaux.  
+* `UsedSpaceOnly` : Permet un chiffrement quasi instantané dans le cadre d'un lab, en ne chiffrant que les secteurs contenant des données (à éviter en production sur un disque ayant déjà contenu des données sensibles non chiffrées).
 
-```bash
-trivy fs / -f json --severity HIGH,CRITICAL -o /tmp/vuln-report.json 2>/dev/null
+## **Validation de la sauvegarde dans Active Directory**
 
-python3 << 'PY'
-import json, html
+**Commandes exécutées :**
 
-with open('/tmp/vuln-report.json') as f:
-    data = json.load(f)
+* Get-ADObject \-Filter {ObjectClass \-eq 'msFVE-RecoveryInformation'} \-Properties msFVE-RecoveryPassword
 
-vulns = []
-for result in data.get('Results', []):
-    for v in result.get('Vulnerabilities', []):
-        vulns.append({
-            'id': v.get('VulnerabilityID',''),
-            'pkg': v.get('PkgName',''),
-            'installed': v.get('InstalledVersion',''),
-            'fixed': v.get('FixedVersion','N/A'),
-            'cvss': float((v.get('CVSS') or {}).get('nvd',{}).get('V3Score', 0)),
-            'severity': v.get('Severity',''),
-        })
-
-vulns.sort(key=lambda x: x['cvss'], reverse=True)
-
-with open('/tmp/vuln-report.html', 'w') as f:
-    f.write('''<!DOCTYPE html><html><head><title>Rapport Vulnérabilités</title>
-<style>body{font-family:sans-serif;background:#0d1117;color:#c9d1d9;padding:20px}
-table{width:100%;border-collapse:collapse}th,td{padding:8px;border:1px solid #30363d}
-th{background:#161b22}.CRITICAL{color:#ff4d4f}.HIGH{color:#ff7a00}</style></head><body>
-<h1>Rapport Vulnérabilités Trivy</h1><table>
-<tr><th>CVE</th><th>Package</th><th>Version</th><th>Fix</th><th>CVSS</th><th>Niveau</th></tr>''')
-    for v in vulns[:50]:
-        f.write(f'<tr><td>{html.escape(v["id"])}</td><td>{html.escape(v["pkg"])}</td><td>{html.escape(v["installed"])}</td><td>{html.escape(str(v["fixed"]))}</td><td>{v["cvss"]}</td><td class="{v["severity"]}">{v["severity"]}</td></tr>')
-    f.write('</table></body></html>')
-print(f'Rapport : /tmp/vuln-report.html ({len(vulns)} vulnérabilités)')
-PY
-```
+**Explication de l'audit :** Cette commande, exécutée sur le Contrôleur de Domaine, est la preuve finale de l'architecture. Elle interroge la base de données LDAP à la recherche des objets de type `msFVE-RecoveryInformation`. Le fait de voir la clé en clair remonter dans la console prouve que le mécanisme de séquestre (Key Escrow) de l'Active Directory a fonctionné, validant ainsi l'exigence de résilience.
