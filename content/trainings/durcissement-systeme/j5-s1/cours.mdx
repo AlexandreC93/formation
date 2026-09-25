@@ -1,114 +1,51 @@
----
-title: Docker & Sécurité des Conteneurs
----
+# **Hygiène Cryptographique et Sécurisation des Flux (TLS / SSH)**
 
-# Docker & Sécurité des Conteneurs
+## **1\. Concepts et Normes Cryptographiques Actuelles**
 
-## Concepts fondamentaux de sécurité Docker
+La protection des données en transit repose sur l'utilisation de protocoles cryptographiques robustes. L'objectif est de garantir la confidentialité, l'intégrité et l'authenticité des communications face aux interceptions (Man-in-the-Middle).
 
-Les conteneurs Docker utilisent :
-- **Namespaces** : isolation (PID, réseau, FS, UTS)
-- **cgroups** : limitation des ressources
-- **Capabilities** : restriction des privilèges root
-- **seccomp** : filtrage des appels système
+### **1.1 Obsolescence des protocoles**
 
-```bash
-# Vérifier l'installation Docker
-docker version
-docker info | grep -E 'Security|Root Dir|Logging'
+Les recommandations de l'ANSSI (RGS) imposent le déclassement des protocoles obsolètes, vulnérables à des attaques connues (POODLE, BEAST, CRIME) :
 
-# Informations de sécurité d'un conteneur
-docker inspect nginx | jq '.[0].HostConfig | {Privileged, CapAdd, CapDrop, SecurityOpt}'
-```
+* **Protocoles à désactiver impérativement :** SSLv2, SSLv3, TLS 1.0, TLS 1.1.  
+* **Protocoles autorisés :** TLS 1.2 (configuré strictement) et TLS 1.3.
 
-## Bonnes pratiques Dockerfile
+### **1.2 Algorithmes et Suites Cryptographiques (Cipher Suites)**
 
-```dockerfile
-# Dockerfile sécurisé
-FROM python:3.12-slim-bookworm
+Un protocole robuste (comme TLS 1.2) peut être rendu vulnérable s'il négocie une suite cryptographique faible.
 
-# Mettre à jour les paquets de sécurité
-RUN apt-get update && apt-get upgrade -y --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/*
+* **Hachage :** Les algorithmes MD5 et SHA-1 sont dépréciés en raison du risque de collision. SHA-256 ou supérieur est exigé.  
+* **Chiffrement symétrique :** RC4, DES et 3DES doivent être bloqués. L'utilisation d'AES (notamment en mode GCM) ou de ChaCha20 est requise.  
+* **Échange de clés et PFS :** Il est impératif d'utiliser des algorithmes garantissant la confidentialité persistante (Perfect Forward Secrecy \- PFS), tels que ECDHE (Elliptic Curve Diffie-Hellman Ephemeral). Si la clé privée du serveur est compromise dans le futur, les communications passées ne pourront pas être déchiffrées.
 
-# Utilisateur non-root
-RUN groupadd -r appgroup && useradd -r -g appgroup appuser
+## **2\. Durcissement sous Windows : L'API Schannel**
 
-WORKDIR /app
+Sous Windows Server, la majorité des services natifs (IIS, RDP, WinRM, LDAPS) s'appuient sur un composant central du système d'exploitation nommé **Schannel** (Secure Channel) pour la gestion des protocoles TLS/SSL.
 
-COPY --chown=appuser:appgroup requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+### **2.1 La configuration par Base de Registre**
 
-COPY --chown=appuser:appgroup . .
+Schannel ne dispose pas d'interface graphique native de configuration. Les protocoles, les chiffrements et les algorithmes de hachage sont pilotés par des clés de registre situées dans le chemin suivant : `HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\`
 
-USER appuser
+Pour désactiver un protocole (ex: TLS 1.0), il est nécessaire de créer les sous-clés `Client` et `Server`, et d'y configurer la valeur DWORD `Enabled` à `0`.
 
-EXPOSE 8000
+### **2.2 Automatisation et Outillage**
 
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD curl -f http://localhost:8000/health || exit 1
+La modification manuelle de la base de registre pour des dizaines d'algorithmes étant sujette à erreur, l'industrie utilise des scripts PowerShell ou des utilitaires tiers (comme l'outil gratuit IISCrypto en mode ligne de commande) pour appliquer des modèles (Templates) conformes aux bonnes pratiques (ex: "Strict" ou "Best Practices"). *Note : Toute modification de la configuration Schannel nécessite un redémarrage du serveur Windows pour être prise en compte par le noyau.*
 
-CMD ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
-```
+## **3\. Durcissement sous Linux : OpenSSH**
 
-## Sécuriser le runtime Docker
+Sur les serveurs Linux, bien qu'OpenSSL gère la majorité des flux TLS (Apache, Nginx), le service d'administration OpenSSH requiert un durcissement spécifique dans son fichier de configuration principal (`/etc/ssh/sshd_config`).
 
-```bash
-# Limiter les ressources (anti-DoS)
-docker run -d \
-  --memory 512m \
-  --memory-swap 512m \
-  --cpus 1.0 \
-  --pids-limit 50 \
-  --ulimit nofile=1024:1024 \
-  nginx
+### **3.1 Paramètres de chiffrement SSH**
 
-# Retirer les capabilities inutiles
-docker run --cap-drop ALL --cap-add NET_BIND_SERVICE nginx
+Par défaut, OpenSSH maintient une compatibilité ascendante avec des algorithmes vieillissants. L'administrateur doit restreindre explicitement les méthodes autorisées :
 
-# Lecture seule (immutable)
-docker run --read-only \
-  --tmpfs /tmp:rw,noexec,nosuid,size=65536k \
-  nginx
+* **KexAlgorithms (Key Exchange) :** Limiter aux courbes elliptiques (ex: `curve25519-sha256`).  
+* **Ciphers (Chiffrement symétrique) :** Restreindre aux modes GCM et ChaCha20 (ex: `chacha20-poly1305@openssh.com`, `aes256-gcm@openssh.com`).  
+* **MACs (Message Authentication Codes) :** Exclure MD5 et SHA1 au profit d'algorithmes EtM (Encrypt-then-MAC) basés sur SHA-2 ou SHA-3 (ex: `hmac-sha2-512-etm@openssh.com`).
 
-# Sans nouveau privilèges
-docker run --security-opt no-new-privileges nginx
+### **3.2 Implémentation**
 
-# AppArmor
-docker run --security-opt apparmor=docker-default nginx
-```
+Ces directives doivent être ajoutées ou modifiées dans le fichier `sshd_config`. Après vérification de la syntaxe (`sshd -t`), le rechargement du service applique immédiatement les restrictions. Tout client SSH distant ne supportant pas ces algorithmes modernes verra sa tentative de connexion rejetée au stade de la négociation (Handshake).
 
-## Docker Compose sécurisé
-
-```yaml
-# docker-compose.yml
-version: '3.8'
-
-services:
-  webapp:
-    image: monapp:v1.0
-    user: "1000:1000"
-    read_only: true
-    tmpfs:
-      - /tmp:noexec,nosuid
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_BIND_SERVICE
-    security_opt:
-      - no-new-privileges:true
-      - apparmor:docker-default
-    ports:
-      - "127.0.0.1:8080:8080"
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 512M
-```
