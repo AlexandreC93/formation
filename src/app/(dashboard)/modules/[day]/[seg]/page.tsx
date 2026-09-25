@@ -35,7 +35,7 @@ export default async function ModulePage({ params }: PageProps) {
   }
 
   // 3. Résolution du segment demandé
-  const segment = getSegmentBySlug(config, day, seg);
+  const segment = await getSegmentBySlug(config, day, seg);
   if (!segment) notFound();
 
   // 4. Contrôle d'accès strict côté serveur

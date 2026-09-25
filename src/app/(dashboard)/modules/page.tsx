@@ -14,7 +14,7 @@ export default async function ModulesIndexPage() {
   const config = await getTraining(trainingId);
 
   if (config) {
-    const segments = generateSegments(config);
+    const segments = await generateSegments(config);
     const activeSegment = segments.find((s) => s.index === session.active_segment);
     if (activeSegment) {
       redirect(`/modules/${activeSegment.day}/${activeSegment.seg}`);

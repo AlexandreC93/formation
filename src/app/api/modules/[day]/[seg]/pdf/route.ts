@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionCode } from '@/lib/auth';
 import { getSession } from '@/lib/redis';
-import { getTraining, getSegmentBySlug, checkPdfExists } from '@/lib/trainings';
+import { getTraining, getSegmentBySlug, resolveSegmentFiles } from '@/lib/trainings';
 import { createReadStream } from 'fs';
 import { join } from 'path';
 
@@ -36,7 +36,7 @@ export async function GET(
   }
 
   // 3. Segment
-  const segment = getSegmentBySlug(config, day, seg);
+  const segment = await getSegmentBySlug(config, day, seg);
   if (!segment) {
     return new NextResponse('Segment introuvable', { status: 404 });
   }
@@ -52,13 +52,14 @@ export async function GET(
   }
 
   // 6. Fichier existe ?
-  const exists = await checkPdfExists(trainingId, segment.slug, type);
-  if (!exists) {
+  const files = await resolveSegmentFiles(trainingId, segment.slug);
+  const pdfFilename = files[type].pdf;
+  if (!pdfFilename) {
     return new NextResponse('Fichier introuvable', { status: 404 });
   }
 
   // 7. Envoi du flux
-  const filePath = join(process.cwd(), 'content', 'trainings', trainingId, segment.slug, `${type}.pdf`);
+  const filePath = join(process.cwd(), 'content', 'trainings', trainingId, segment.slug, pdfFilename);
   const stream = createReadStream(filePath);
   
   return new NextResponse(stream as unknown as ReadableStream, {

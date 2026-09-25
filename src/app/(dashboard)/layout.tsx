@@ -25,7 +25,7 @@ export default async function DashboardLayout({
     return <div>Configuration de formation introuvable.</div>;
   }
 
-  const segments = generateSegments(config);
+  const segments = await generateSegments(config);
 
   const sidebarProps = {
     initialStatus: {

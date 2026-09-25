@@ -4,8 +4,9 @@ import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { logoutAction } from '@/app/actions/auth';
-import { Lock, Unlock, ChevronDown, ChevronRight, GraduationCap, LogOut, Download, Menu, X } from 'lucide-react';
+import { Lock, Unlock, ChevronDown, ChevronRight, GraduationCap, LogOut, Download, Menu, X, Search } from 'lucide-react';
 import { ThemeToggle } from './theme-toggle';
+import { SearchDialog } from './search-dialog';
 import type { Segment, TrainingConfig } from '@/lib/trainings';
 
 interface SessionStatus {
@@ -30,6 +31,7 @@ export function MobileNav({
 }: MobileNavProps) {
   const pathname = usePathname();
   const [isOpen, setIsOpen] = useState(false);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [status, setStatus] = useState<SessionStatus>(initialStatus);
   const [openDays, setOpenDays] = useState<Record<number, boolean>>({});
 
@@ -138,6 +140,20 @@ export function MobileNav({
               </button>
             </div>
 
+            {/* Barre de recherche mobile */}
+            <div className="p-3 border-b border-slate-200 dark:border-white/5">
+              <button
+                onClick={() => {
+                  setIsOpen(false);
+                  setIsSearchOpen(true);
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors text-sm"
+              >
+                <Search className="w-4 h-4" />
+                <span>Rechercher...</span>
+              </button>
+            </div>
+
             {/* Navigation */}
             <nav className="flex-1 p-3 space-y-1 overflow-y-auto" aria-label="Navigation des modules mobile">
               {DAYS.map((day) => {
@@ -240,6 +256,8 @@ export function MobileNav({
           </div>
         </div>
       )}
+
+      <SearchDialog isOpen={isSearchOpen} onClose={() => setIsSearchOpen(false)} />
     </>
   );
 }

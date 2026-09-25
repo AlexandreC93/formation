@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { getSession } from '@/lib/redis';
-import { getTraining, generateSegments, checkPdfExists } from '@/lib/trainings';
+import { getTraining, generateSegments, resolveSegmentFiles } from '@/lib/trainings';
 import JSZip from 'jszip';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
@@ -32,7 +32,7 @@ export async function GET() {
   }
 
   const zip = new JSZip();
-  const segments = generateSegments(config);
+  const segments = await generateSegments(config);
   const trainingDir = join(process.cwd(), 'content', 'trainings', trainingId);
 
   const rootFolder = zip.folder(`Formation-${config.title.replace(/[^a-zA-Z0-9-]/g, '_')}`);
@@ -50,20 +50,23 @@ export async function GET() {
 
       const segmentDir = join(trainingDir, segment.slug);
 
+      const files = await resolveSegmentFiles(trainingId, segment.slug);
+
       const addFile = async (type: 'cours' | 'tp' | 'corrige', niceName: string) => {
         // Skip if corrigé is locked
         if (type === 'corrige' && !session.unlocked_solutions.includes(segment.index)) {
           return;
         }
 
-        const hasPdf = await checkPdfExists(trainingId, segment.slug, type);
+        const pdfFile = files[type].pdf;
+        const mdxFile = files[type].mdx;
         
-        if (hasPdf) {
-          const pdfContent = await readFile(join(segmentDir, `${type}.pdf`));
+        if (pdfFile) {
+          const pdfContent = await readFile(join(segmentDir, pdfFile));
           segmentFolder.file(`${niceName}.pdf`, pdfContent);
-        } else {
+        } else if (mdxFile) {
           try {
-            const mdxContent = await readFile(join(segmentDir, `${type}.mdx`), 'utf-8');
+            const mdxContent = await readFile(join(segmentDir, mdxFile), 'utf-8');
             const cleanContent = mdxContent.replace(/^---[\s\S]*?---\n*/, '');
             segmentFolder.file(`${niceName}.md`, cleanContent);
           } catch {

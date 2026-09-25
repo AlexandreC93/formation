@@ -176,7 +176,7 @@ export default async function AdminPage() {
             );
           }
 
-          const allSegments = generateSegments(trainingConfig);
+          const allSegments = await generateSegments(trainingConfig);
           const daysArray = Array.from({ length: trainingConfig.totalDays }, (_, i) => i + 1);
 
           return (

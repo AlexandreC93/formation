@@ -4,8 +4,9 @@ import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { logoutAction } from '@/app/actions/auth';
-import { Lock, Unlock, ChevronDown, ChevronRight, GraduationCap, LogOut, Download } from 'lucide-react';
+import { Lock, Unlock, ChevronDown, ChevronRight, GraduationCap, LogOut, Download, Search } from 'lucide-react';
 import { ThemeToggle } from './theme-toggle';
+import { SearchDialog } from './search-dialog';
 import type { Segment, TrainingConfig } from '@/lib/trainings';
 
 interface SessionStatus {
@@ -31,6 +32,19 @@ export function Sidebar({
   const pathname = usePathname();
   const [status, setStatus] = useState<SessionStatus>(initialStatus);
   const [openDays, setOpenDays] = useState<Record<number, boolean>>({});
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+
+  // Écouteur pour Cmd+K / Ctrl+K
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        setIsSearchOpen((open) => !open);
+      }
+    };
+    document.addEventListener('keydown', down);
+    return () => document.removeEventListener('keydown', down);
+  }, []);
 
   const pollInterval = parseInt(
     process.env.NEXT_PUBLIC_SESSION_POLL_INTERVAL ?? '30000',
@@ -89,6 +103,22 @@ export function Sidebar({
             <p className="text-slate-500 text-xs truncate max-w-[160px]">{sessionName}</p>
           </div>
         </div>
+      </div>
+
+      {/* Barre de recherche */}
+      <div className="p-3 border-b border-slate-200 dark:border-white/5">
+        <button
+          onClick={() => setIsSearchOpen(true)}
+          className="w-full flex items-center justify-between px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors"
+        >
+          <div className="flex items-center gap-2">
+            <Search className="w-4 h-4" />
+            <span className="text-xs">Rechercher...</span>
+          </div>
+          <kbd className="hidden md:inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-white/5 text-[10px] font-medium text-slate-500">
+            <span>⌘</span>K
+          </kbd>
+        </button>
       </div>
 
       {/* Navigation des segments */}
@@ -190,6 +220,8 @@ export function Sidebar({
           </button>
         </form>
       </div>
+
+      <SearchDialog isOpen={isSearchOpen} onClose={() => setIsSearchOpen(false)} />
     </aside>
   );
 }
