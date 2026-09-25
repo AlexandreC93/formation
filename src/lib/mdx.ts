@@ -20,13 +20,14 @@ const rehypePrettyCodeOptions = {
   defaultLang: 'bash',
 };
 
-// Nettoie un nom de fichier pour en faire un titre (ex: "01-haute-disponibilite.mdx" -> "Haute Disponibilite")
 function cleanFilenameToTitle(filename: string): string {
   return filename
+    .replace(/\.(cours|tp|corrige)\.mdx?$/, '')
+    .replace(/\.pdf$/, '')
     .replace(/\.mdx?$/, '') // Enlever l'extension
-    .replace(/^\d+-/, '')   // Enlever le préfixe numérique
+    .replace(/^(\d+[\s_-]*)+/, '') // Enlever le préfixe (ex: '01 - ' ou '01_')
     .replace(/[-_]/g, ' ')  // Remplacer tirets par espaces
-    .replace(/\b\w/g, (c) => c.toUpperCase()); // Majuscules
+    .trim();
 }
 
 export async function loadMDX(
@@ -51,7 +52,16 @@ export async function loadMDX(
   );
 
   try {
-    const raw = await readFile(filePath, 'utf-8');
+    let raw = await readFile(filePath, 'utf-8');
+    
+    let h1Title = '';
+    // Extraction et suppression du titre H1 si présent
+    const h1Match = raw.match(/^\s*#\s+(.*)$/m);
+    if (h1Match && h1Match[1]) {
+      h1Title = h1Match[1].trim();
+      raw = raw.replace(/^\s*#\s+.*$/m, '');
+    }
+
     const { content, frontmatter } = await compileMDX<Record<string, unknown>>({
       source: raw,
       options: {
@@ -65,7 +75,9 @@ export async function loadMDX(
     });
     
     // Assurer qu'il y a un titre
-    if (!frontmatter.title) {
+    if (h1Title) {
+      frontmatter.title = h1Title;
+    } else if (!frontmatter.title) {
       frontmatter.title = cleanFilenameToTitle(mdxFilename);
     }
 

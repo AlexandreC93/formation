@@ -69,18 +69,21 @@ export async function generateSegments(config: TrainingConfig): Promise<Segment[
       try {
         const files = await resolveSegmentFiles(config.id, slug);
         if (files.cours.mdx) {
-          // Extraire le titre du frontmatter ou du nom de fichier
           const filePath = join(process.cwd(), 'content', 'trainings', config.id, slug, files.cours.mdx);
           const raw = await readFile(filePath, 'utf-8');
-          const titleMatch = raw.match(/^title:\s*(.*)$/m);
-          if (titleMatch && titleMatch[1]) {
-            realTitle = titleMatch[1].replace(/['"]/g, '').trim();
+          
+          const h1Match = raw.match(/^\s*#\s+(.*)$/m);
+          
+          if (h1Match && h1Match[1]) {
+            realTitle = h1Match[1].trim();
           } else {
             realTitle = files.cours.mdx
+              .replace(/\.(cours|tp|corrige)\.mdx?$/, '')
+              .replace(/\.pdf$/, '')
               .replace(/\.mdx?$/, '')
-              .replace(/^\d+-/, '')
+              .replace(/^(\d+[\s_-]*)+/, '') // Enlève '01 - ' ou '01_' 
               .replace(/[-_]/g, ' ')
-              .replace(/\b\w/g, (c) => c.toUpperCase());
+              .trim();
           }
         }
       } catch {
@@ -133,18 +136,22 @@ export async function resolveSegmentFiles(trainingId: string, segmentSlug: strin
       
       if (!isMdx && !isPdf) continue;
 
-      let type: 'cours' | 'tp' | 'corrige' = 'cours';
+      let type: 'cours' | 'tp' | 'corrige' | null = null;
       
-      if (lower.includes('tp') || lower.includes('exercice') || lower.includes('lab')) {
+      if (lower.includes('.tp.') || lower.endsWith('tp.mdx') || lower.endsWith('tp.pdf')) {
         type = 'tp';
-      } else if (lower.includes('corrige') || lower.includes('solution') || lower.includes('correction')) {
+      } else if (lower.includes('.corrige.') || lower.endsWith('corrige.mdx') || lower.endsWith('corrige.pdf')) {
         type = 'corrige';
+      } else if (lower.includes('.cours.') || lower.endsWith('cours.mdx') || lower.endsWith('cours.pdf')) {
+        type = 'cours';
       }
 
-      if (isMdx && !result[type].mdx) {
-        result[type].mdx = file;
-      } else if (isPdf && !result[type].pdf) {
-        result[type].pdf = file;
+      if (type) {
+        if (isMdx && !result[type].mdx) {
+          result[type].mdx = file;
+        } else if (isPdf && !result[type].pdf) {
+          result[type].pdf = file;
+        }
       }
     }
   } catch {

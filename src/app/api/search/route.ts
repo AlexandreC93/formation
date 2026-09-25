@@ -5,6 +5,16 @@ import { getTraining, generateSegments, resolveSegmentFiles } from '@/lib/traini
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 
+function cleanFilenameToTitle(filename: string): string {
+  return filename
+    .replace(/\.(cours|tp|corrige)\.mdx?$/, '')
+    .replace(/\.pdf$/, '')
+    .replace(/\.mdx?$/, '')
+    .replace(/^(\d+[\s_-]*)+/, '')
+    .replace(/[-_]/g, ' ')
+    .trim();
+}
+
 function stripMarkdown(md: string): string {
   // Suppression basique de la syntaxe Markdown
   return md
@@ -82,12 +92,12 @@ export async function GET(request: NextRequest) {
         const content = await readFile(filePath, 'utf-8');
         
         let title = segment.title;
-        // Si c'est le cours, on tente de récupérer le titre du frontmatter du cours pour plus de précision
-        if (type === 'cours') {
-           const titleMatch = content.match(/^title:\s*(.*)$/m);
-           if (titleMatch && titleMatch[1]) {
-             title = titleMatch[1].replace(/['"]/g, '').trim();
-           }
+        // On tente de récupérer le titre du H1
+        const h1Match = content.match(/^\s*#\s+(.*)$/m);
+        if (h1Match && h1Match[1]) {
+          title = h1Match[1].trim();
+        } else if (type === 'cours') {
+          title = cleanFilenameToTitle(mdxFilename);
         }
 
         const plainText = stripMarkdown(content);
