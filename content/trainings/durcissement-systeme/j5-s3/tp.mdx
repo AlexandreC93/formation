@@ -1,0 +1,137 @@
+# **PowerShell DSC et Auto-Remédiation (Infrastructure as Code)**
+
+## **Configuration du moteur LCM (Local Configuration Manager)**
+
+Par défaut, le moteur DSC de Windows se contente d'appliquer une configuration. Nous devons le transformer en un "Gardien" actif en activant le mode `ApplyAndAutoCorrect`.
+
+1. Ouvrez une console **Windows PowerShell en tant qu'Administrateur**.
+
+Copiez et exécutez ce script pour reconfigurer le moteur LCM local :  
+\[DSCLocalConfigurationManager()\]
+
+Configuration ConfigurerLCM
+
+{
+
+    Node localhost
+
+    {
+
+        Settings
+
+        {
+
+            ConfigurationMode \= 'ApplyAndAutoCorrect'
+
+            ConfigurationModeFrequencyMins \= 15
+
+            \# Redémarrage automatique autorisé si une ressource le demande
+
+            RebootNodeIfNeeded \= \$true
+
+        }
+
+    }
+
+}
+
+\# Génération du fichier Meta.mof
+
+ConfigurerLCM \-OutputPath "C:\\DSC\_LCM"
+
+\# Application de la configuration au LCM
+
+Set-DscLocalConfigurationManager \-Path "C:\\DSC\_LCM" \-Verbose
+
+2. 
+
+Vérifiez que le LCM a bien pris en compte votre mode "AutoCorrect" :  
+Get-DscLocalConfigurationManager | Select-Object ConfigurationMode
+
+3. 
+
+## **Création de la Configuration Déclarative (Le Code)**
+
+Nous allons maintenant écrire le fichier d'Infrastructure-as-Code. Nous ne disons pas *comment* faire, nous déclarons *l'état final souhaité*.
+
+1. Restez dans votre console PowerShell Administrateur.
+
+Créez la configuration en exécutant ce bloc de code complet :  
+Configuration Durcissement\_UAC
+
+{
+
+    Import-DscResource \-ModuleName PSDesiredStateConfiguration
+
+    Node localhost
+
+    {
+
+        \# Déclaration de l'état souhaité pour l'UAC
+
+        Registry UAC\_EnableLUA
+
+        {
+
+            Ensure      \= "Present"
+
+            Key         \= "HKEY\_LOCAL\_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"
+
+            ValueName   \= "EnableLUA"
+
+            ValueData   \= "1"
+
+            ValueType   \= "Dword"
+
+            Force       \= \$true
+
+        }
+
+    }
+
+}
+
+\# Compilation du code en fichier .MOF compréhensible par le système
+
+Durcissement\_UAC \-OutputPath "C:\\DSC\_Config"
+
+2. 
+
+Vérifiez que le fichier compilé a bien été généré :  
+Test-Path "C:\\DSC\_Config\\localhost.mof"
+
+3. 
+
+## **Déploiement (Application de l'état souhaité)**
+
+Nous allons maintenant envoyer cette configuration (le `.mof`) au LCM pour qu'il l'applique à notre serveur.
+
+"Poussez" la configuration vers le moteur DSC local :  
+Start-DscConfiguration \-Path "C:\\DSC\_Config" \-Wait \-Verbose \-Force
+
+1. *(Le système va lire la clé de registre et s'assurer qu'elle est bien à 1).*
+
+## **Le Crash-Test (Simulation d'une attaque et Dérive)**
+
+L'intérêt de DSC n'est pas l'application initiale, c'est l'auto-remédiation. Nous allons simuler un administrateur malveillant (ou un malware) qui désactive l'UAC.
+
+Tentez de désactiver l'UAC brutalement via le registre (comme le ferait un attaquant) :  
+Set-ItemProperty \-Path "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" \-Name "EnableLUA" \-Value 0 \-Force
+
+1. 
+
+Vérifiez que l'UAC est bien désactivée (la valeur doit afficher `0`) :  
+Get-ItemProperty \-Path "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" \-Name "EnableLUA" | Select-Object EnableLUA
+
+2. 
+
+**L'Auto-remédiation :** Dans la vraie vie, le LCM tourne en tâche de fond et scannera le serveur d'ici 15 minutes. Dès qu'il verra le "0", il remettra le "1". Pour ne pas attendre 15 minutes dans ce lab, nous allons forcer le moteur DSC à faire son cycle d'évaluation immédiatement :  
+Start-DscConfiguration \-UseExisting \-Wait \-Verbose
+
+3. *(Regardez bien les logs affichés en jaune à l'écran. Vous verrez DSC détecter que la valeur n'est pas correcte et indiquer qu'il la corrige).*
+
+**Validation finale :** Interrogez à nouveau le registre :  
+Get-ItemProperty \-Path "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" \-Name "EnableLUA" | Select-Object EnableLUA
+
+4. La valeur est repassée à `1`. Le serveur est devenu "auto-réparant" face à la dérive de configuration.
+
