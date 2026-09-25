@@ -3,7 +3,7 @@ import { readFile } from 'fs/promises';
 import { join } from 'path';
 import rehypePrettyCode from 'rehype-pretty-code';
 import remarkGfm from 'remark-gfm';
-import { resolveSegmentFiles } from './trainings';
+import { resolveSegmentFiles, sanitizeTitle } from './trainings';
 import type { JSX } from 'react';
 
 export type MdxType = 'cours' | 'tp' | 'corrige';
@@ -21,13 +21,13 @@ const rehypePrettyCodeOptions = {
 };
 
 function cleanFilenameToTitle(filename: string): string {
-  return filename
+  const cleanName = filename
     .replace(/\.(cours|tp|corrige)\.mdx?$/, '')
     .replace(/\.pdf$/, '')
-    .replace(/\.mdx?$/, '') // Enlever l'extension
-    .replace(/^(\d+[\s_-]*)+/, '') // Enlever le préfixe (ex: '01 - ' ou '01_')
-    .replace(/[-_]/g, ' ')  // Remplacer tirets par espaces
-    .trim();
+    .replace(/\.mdx?$/, '')
+    .replace(/^(\d+[\s_-]*)+/, '')
+    .replace(/[-_]/g, ' ');
+  return sanitizeTitle(cleanName);
 }
 
 export async function loadMDX(
@@ -55,11 +55,10 @@ export async function loadMDX(
     let raw = await readFile(filePath, 'utf-8');
     
     let h1Title = '';
-    // Extraction et suppression du titre H1 si présent
+    // Extraction du titre H1 si présent (mais sans le supprimer du flux)
     const h1Match = raw.match(/^\s*#\s+(.*)$/m);
     if (h1Match && h1Match[1]) {
-      h1Title = h1Match[1].trim();
-      raw = raw.replace(/^\s*#\s+.*$/m, '');
+      h1Title = sanitizeTitle(h1Match[1]);
     }
 
     const { content, frontmatter } = await compileMDX<Record<string, unknown>>({

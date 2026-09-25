@@ -72,12 +72,6 @@ export function SegmentTabs({
 
   return (
     <div className="flex flex-col h-full relative min-w-0">
-      {/* En-tête (Titres) */}
-      <div className="px-4 md:px-6 pt-6 pb-2">
-        <h1 className="text-xl md:text-2xl font-bold text-slate-900 dark:text-white mb-1 leading-tight">{segmentTitle}</h1>
-        <p className="text-slate-500 dark:text-slate-400 text-xs md:text-sm mb-4">Formation Technique</p>
-      </div>
-
       {/* Onglets - Sticky sur mobile */}
       <div className="sticky top-0 z-20 px-4 md:px-6 pt-2 bg-slate-50/90 dark:bg-slate-950/90 backdrop-blur-md border-b border-slate-200 dark:border-white/10">
         <div className="flex items-center justify-between gap-4">

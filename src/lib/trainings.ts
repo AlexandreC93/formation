@@ -1,6 +1,17 @@
 import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
 
+export function sanitizeTitle(rawTitle: string): string {
+  return rawTitle
+    .replace(/^#+\s+/, '')
+    .replace(/(\*\*|__)(.*?)\1/g, '$2')
+    .replace(/(\*|_)(.*?)\1/g, '$2')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/<[^>]*>/g, '')
+    .trim();
+}
+
 export interface TrainingConfig {
   id: string;
   title: string;
@@ -75,15 +86,15 @@ export async function generateSegments(config: TrainingConfig): Promise<Segment[
           const h1Match = raw.match(/^\s*#\s+(.*)$/m);
           
           if (h1Match && h1Match[1]) {
-            realTitle = h1Match[1].trim();
+            realTitle = sanitizeTitle(h1Match[1]);
           } else {
-            realTitle = files.cours.mdx
+            const cleanName = files.cours.mdx
               .replace(/\.(cours|tp|corrige)\.mdx?$/, '')
               .replace(/\.pdf$/, '')
               .replace(/\.mdx?$/, '')
               .replace(/^(\d+[\s_-]*)+/, '') // Enlève '01 - ' ou '01_' 
-              .replace(/[-_]/g, ' ')
-              .trim();
+              .replace(/[-_]/g, ' ');
+            realTitle = sanitizeTitle(cleanName);
           }
         }
       } catch {
