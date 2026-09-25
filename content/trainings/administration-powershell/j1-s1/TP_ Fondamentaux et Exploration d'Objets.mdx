@@ -1,0 +1,66 @@
+# **TP : Les Fondamentaux de PowerShell et l'Exploration d'Objets** 
+
+## **Objectifs du TP** 
+
+- Apprendre à utiliser la console PowerShell pour rechercher des commandes de manière autonome. 
+
+- Maîtriser le système d'aide intégré et comprendre la syntaxe de la documentation officielle. 
+
+- Comprendre et analyser la structure d'un objet .NET (Propriétés et Méthodes) renvoyé par la console. 
+
+## **Exercice 1 : Recherche de Commandes (Get-Command)** 
+
+Dans cet exercice, vous devez utiliser uniquement la commande Get-Command (et ses paramètres associés) pour identifier les outils nécessaires. 
+
+### **Instructions :** 
+
+1. Recherchez l'ensemble des commandes disponibles sur votre système contenant le mot-clé **Service** . 
+
+2. Identifiez la cmdlet permettant d'obtenir la liste des cartes réseau de la machine (Indice : utilisez le mot-clé ou le module lié à _NetAdapter_ ). 
+
+3. Trouvez toutes les cmdlets utilisant le verbe **Restart** . Quelle est la commande exacte pour redémarrer une carte réseau ? 
+
+4. Identifiez la cmdlet permettant de compter, mesurer ou calculer des statistiques sur des objets (Indice : recherchez les commandes contenant le mot-clé _Measure_ ). 
+
+## **Exercice 2 : Utilisation de l'Aide Intégrée (Get-Help)** 
+
+Dans cet exercice, vous allez apprendre à lire la documentation PowerShell directement depuis votre terminal pour en comprendre le fonctionnement et la syntaxe. 
+
+### **Instructions :** 
+
+1. Affichez l'aide complète de la cmdlet Get-Process. 
+
+2. Identifiez la commande permettant d'afficher uniquement les exemples d'utilisation de Get-Process. 
+
+3. Examinez la syntaxe de la cmdlet Stop-Process obtenue via l'aide. 
+
+   - Le paramètre -Name est-il obligatoire ou optionnel ? 
+
+   - Comment la syntaxe de l'aide permet-elle de le déterminer visuellement ? 
+
+4. Exécutez la commande permettant d'ouvrir la documentation de Get-EventLog dans une 
+
+fenêtre graphique externe détachable. 
+
+## **Exercice 3 : Exploration et Découverte d'Objets (Get-Member)** 
+
+Cet exercice met en évidence le fait que PowerShell ne manipule pas du texte brut, mais des objets structurés en mémoire (modèle .NET). 
+
+### **Instructions :** 
+
+1. Envoyez le résultat de la commande Get-Date vers Get-Member en utilisant le pipeline (|). ○ Quel est le type .NET exact de l'objet retourné (indiqué sur la première ligne de la sortie) ? 
+
+2. En analysant la sortie de la question précédente : 
+
+   - Identifiez la **propriété** qui contient le jour de l'année (un nombre entre 1 et 365). 
+
+   - Identifiez la **méthode** qui permet d'ajouter un nombre de jours à l'objet date actuel. 
+
+3. Exécutez la commande suivante pour cibler le service Windows Update : Get-Service -Name wuauserv | Get-Member 
+
+   - Quel est le type .NET de cet objet ? 
+
+   - Quelle est la propriété permettant de vérifier si le service peut être mis en pause ? 
+
+   - Quelle est la méthode permettant de stopper le service ? 
+
