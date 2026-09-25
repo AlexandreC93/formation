@@ -1,36 +1,68 @@
----
-title: TP — Scan de vulnérabilités
----
+# **Déploiement de BitLocker et Centralisation Active Directory**
 
-# TP — Scan de vulnérabilités
+## **Configuration de la Stratégie de Groupe (GPO)**
 
-## Objectifs
-- Utiliser des outils de scan open source
-- Analyser et prioriser les vulnérabilités
-- Mettre en place un processus de gestion des vulnérabilités
+Les manipulations de cette partie s'effectuent sur le **Contrôleur de Domaine**.
 
-## Durée estimée : 45 minutes
+1. Ouvrez la console **Gestion de stratégie de groupe** (gpmc.msc).  
+2. Créez un nouvel objet GPO sur l'Unité d'Organisation (OU) contenant votre machine cible. Nommez-le GPO-SEC-BitLocker.  
+3. Faites un clic droit sur la GPO et sélectionnez **Modifier**.  
+4. Naviguez dans l'arborescence suivante :  
+   Configuration ordinateur \> Stratégies \> Modèles d'administration \> Composants Windows \> Chiffrement de lecteur BitLocker.  
+5. **Paramètre 1 : Activation de la sauvegarde globale**  
+   * Localisez le paramètre : *Stocker les informations de récupération BitLocker dans les services de domaine Active Directory*.  
+   * Double-cliquez, cochez **Activé**.  
+   * Laissez les options par défaut (sauvegarde du mot de passe de récupération et du package de clés). Cliquez sur OK.  
+6. **Paramètre 2 : Configuration pour les lecteurs du système d'exploitation**  
+   * Déployez le sous-dossier : Lecteurs du système d'exploitation.  
+   * Localisez : *Choisir comment les lecteurs du système d'exploitation protégés par BitLocker peuvent être récupérés*.  
+   * Double-cliquez, cochez **Activé**.  
+   * Cochez impérativement la case : **Ne pas autoriser BitLocker à commencer le chiffrement tant que les informations de récupération ne sont pas stockées dans AD DS pour les lecteurs du système d'exploitation**. Cliquez sur OK.  
+7. **Paramètre 3 : Compatibilité pour l'environnement de Lab (Sans TPM)**  
+   *Afin de pouvoir activer BitLocker sur une machine virtuelle ne disposant pas de vTPM, il est nécessaire d'autoriser l'usage d'un mot de passe.*  
+   * Localisez : *Exiger une authentification supplémentaire au démarrage*.  
+   * Double-cliquez, cochez **Activé**.  
+   * Cochez la case : **Autoriser BitLocker sans un module de plateforme sécurisée (TPM) compatible**. Cliquez sur OK.  
+8. Fermez l'éditeur de stratégie de groupe.
 
-## Exercice 1 — Scan du système
+## **Application sur la machine cible**
 
-1. Installez Trivy et scannez le système de fichiers local
-2. Listez les vulnérabilités CRITICAL uniquement
-3. Pour les 3 premières CRITICAL, recherchez le CVE officiel et la version corrigée
+Les manipulations s'effectuent désormais sur la **machine cible** (sur laquelle BitLocker va être activé).
 
-## Exercice 2 — Scan de conteneur
+1. Ouvrez une console **Windows PowerShell en tant qu'Administrateur**.  
+2. Forcez l'application de la nouvelle Stratégie de Groupe :  
+   gpupdate /force
 
-1. Scannez les images `nginx:latest`, `python:3.9`, et `alpine:latest`
-2. Classez les images par nombre de vulnérabilités CRITICAL
-3. Proposez des images alternatives plus sécurisées (distroless ou slim)
+3. Vérifiez l'état actuel du volume C: :  
+   Get-BitLockerVolume \-MountPoint "C:"
 
-## Exercice 3 — Patch management
+   *(Le statut de protection doit indiquer Off ou FullyDecrypted).*
 
-1. Listez tous les paquets avec mises à jour de sécurité disponibles
-2. Appliquez les mises à jour de sécurité uniquement
-3. Vérifiez qu'aucun service critique n'est cassé après la mise à jour
+## **Activation de BitLocker**
 
-## Exercice 4 — Rapport de vulnérabilités
+L'activation se fera en ligne de commande. En raison de l'absence de puce TPM physique dans ce contexte, un protecteur par mot de passe sera utilisé pour le démarrage.
 
-1. Générez un rapport JSON complet avec Trivy
-2. Parsez-le pour extraire : CVE ID, package, version affectée, score CVSS
-3. Produisez un rapport HTML trié par score CVSS décroissant
+1. Créez une variable contenant le mot de passe de démarrage sous forme de chaîne sécurisée (remplacez la valeur par le mot de passe souhaité) :  
+   \$SecurePassword \= ConvertTo-SecureString "Formation2026\!" \-AsPlainText \-Force
+
+2. Initiez le processus de chiffrement sur le disque C:. La commande suivante va générer un mot de passe de récupération, l'envoyer à l'Active Directory (conformément à la GPO), et lancer le chiffrement. L'argument \-SkipHardwareTest évite un redémarrage préalable.  
+   Enable-BitLocker \-MountPoint "C:" \-PasswordProtector \$SecurePassword \-EncryptionMethod XtsAes256 \-SkipHardwareTest
+
+3. Vérifiez la progression du chiffrement :  
+   manage-bde \-status
+
+   *(L'état affichera Encrypting avec un pourcentage, puis FullyEncrypted une fois terminé).*
+
+## **Validation de la sauvegarde dans Active Directory**
+
+Il est nécessaire de vérifier que la clé de récupération a bien été transmise au Contrôleur de Domaine. Cette manipulation s'effectue sur le **Contrôleur de Domaine**.
+
+1. Ouvrez une console **Windows PowerShell en tant qu'Administrateur**.  
+2. Exécutez la commande suivante pour lister les objets de récupération BitLocker associés aux ordinateurs du domaine :  
+   Get-ADObject \-Filter {ObjectClass \-eq 'msFVE-RecoveryInformation'} \-Properties msFVE-RecoveryPassword
+
+3. Le résultat retournera le nom de la machine suivi d'un horodatage, ainsi que la valeur de l'attribut msFVE-RecoveryPassword qui contient la clé de récupération à 48 chiffres.
+
+Alternative graphique :
+
+Si la fonctionnalité *Outils d'administration de serveur distant (RSAT) \> Utilitaires d'administration de chiffrement de lecteur BitLocker* est installée sur le Contrôleur de Domaine, un onglet "Récupération BitLocker" sera visible dans les propriétés de l'objet ordinateur via la console dsa.msc.
