@@ -1,0 +1,86 @@
+# **Le Pipeline et la Force des Objets** 
+
+## **Scanner d'objets (Get-Member)** 
+
+Avant de trier ou de filtrer des données, vous devez identifier quelles informations (propriétés) sont disponibles dans vos objets. 
+
+- Récupérez la liste des processus actifs sur votre machine à l'aide de la commande Get-Process. 
+
+- Envoyez ce résultat dans la commande Get-Member en utilisant le pipeline (|). 
+
+- Dans la liste qui s'affiche à l'écran, trouvez le nom exact de la propriété qui contient : 
+
+   - La consommation de processeur du processus (recherchez le type Property). 
+
+   - L'identifiant unique du processus (ID). 
+
+- Faites la même manipulation pour la commande Get-Service. Quelle est la propriété qui indique si un service est démarré ou arrêté ? 
+
+### **Outils:** 
+
+- Scanner un objet : Ma-Commande | Get-Member 
+
+- Méthode de lecture : Concentrez-vous sur la colonne **Name** pour trouver les propriétés (les données) et ignorez pour l'instant les méthodes (les actions). 
+
+## **Filtrage de précision (Where-Object)** 
+
+Une fois les propriétés de vos objets identifiées, vous allez filtrer les lignes pour ne conserver que les données cibles. 
+
+- Affichez uniquement les services Windows dont le statut (Status) est égal à "Stopped" (Arrêté). 
+
+- Affichez la liste des processus actifs, mais filtrez-les pour ne garder que ceux dont la propriété CPU est supérieure à 5 (consommation processeur significative). 
+
+- Affichez la liste des processus dont le nom de processus (ProcessName) est égal à "svchost". 
+
+### **Boîte à outils :** 
+
+Pour filtrer, utilisez la structure suivante : 
+
+Obtenir-Donnees | Where-Object { $_.NomDeLaPropriete -Comparateur "Valeur" } 
+
+- Les comparateurs autorisés : 
+
+   - -eq (égal à) 
+
+   - -gt (supérieur à) 
+
+   - -lt (inférieur à) 
+
+   - -like (ressemble à, accepte le joker * pour les recherches floues) 
+
+- Variable automatique : $_ représente l'objet actuellement en cours de traitement dans le pipeline. 
+
+## **Bonus : Tri et sélection (Sort-Object & Select-Object)** 
+
+Après avoir filtré les lignes, apprenez à trier le résultat et à sélectionner uniquement les colonnes utiles pour épurer l'affichage final. 
+
+- Reprenez votre liste de processus consommant plus de 5 de CPU. 
+
+- Ajoutez un maillon au pipeline pour trier ces processus par ordre décroissant (du plus gourmand au plus calme) en vous basant sur la propriété CPU. 
+
+- Modifiez l'affichage final pour ne conserver que trois colonnes : le nom du processus (ProcessName), son ID (Id), et sa consommation CPU. 
+
+- Limitez le résultat final pour n'afficher que les 5 processus les plus gourmands de la liste. 
+
+### **Boîte à outils :** 
+
+- Trier des données : Ma-Commande | Sort-Object -Property NomPropriete -Descending 
+
+- Sélectionner des colonnes : Ma-Commande | Select-Object Propriete1, Propriete2 
+
+- Limiter le nombre de résultats : Ajoutez le paramètre -First X à la fin de Select-Object (ex: Select-Object -First 5). 
+
+Écrivez un pipeline complet en une seule ligne de commande capable de réaliser les actions suivantes : 
+
+- Trouver tous les services de la machine dont le nom commence par la lettre "W". 
+
+- Filtrer pour ne garder que ceux qui sont actuellement en cours d'exécution ("Running"). 
+
+- Sélectionner uniquement leur nom d'affichage (DisplayName) et leur statut (Status). 
+
+- Exporter ce rapport directement dans un fichier CSV nommé rapport_services_W.csv sur votre bureau Windows 11. 
+
+- Recherche avec joker : Pour cibler ce qui commence par "W", utilisez le comparateur -like "W*" dans votre filtre. 
+
+- Exportation en CSV : ... | Export-Csv -Path "$home\Desktop\rapport_services_W.csv" -NoTypeInformation 
+
