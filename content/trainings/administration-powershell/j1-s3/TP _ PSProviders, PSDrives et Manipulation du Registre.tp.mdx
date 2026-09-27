@@ -1,0 +1,146 @@
+# **PSProviders, PSDrives et Manipulation du Registre** 
+
+PowerShell intègre une fonctionnalité majeure nommée **PSProviders** (Fournisseurs PowerShell). Les PSProviders permettent de naviguer et d'interagir avec d'autres magasins de données système (la base de registre Windows, les certificats numériques, les variables d'environnement) **exactement comme s'il s'agissait d'une arborescence de dossiers et de fichiers** . 
+
+L'objectif de ce TP est de : 
+
+1. Cartographier les magasins de données accessibles via les PSProviders. 
+
+2. Créer un lecteur virtuel ( **PSDrive** ) pour raccourcir l'accès à une branche profonde du système. 
+
+3. Manipuler la base de registre Windows (lecture, création, modification de valeurs) sans jamais ouvrir l'éditeur graphique regedit.exe. 
+
+4. Concevoir un script simple d'audit et de configuration de conformité (audit_registre.ps1). 
+
+### **1.1 Registre dans PowerShell** 
+
+Dans l'explorateur Windows, un dossier contient des fichiers. 
+
+Dans l'Éditeur du Registre (regedit.exe) : 
+
+- Une **Clé** (le dossier jaune dans l'arborescence) est considérée par PowerShell comme un **Item** . 
+
+- Une **Valeur** (l'entrée texte ou DWORD située à l'intérieur de la clé) est considérée comme une **ItemProperty** . 
+
+|**Action dans le Registre**|**Commande PowerShell correspondante**|
+|---|---|
+|Vérifier si une clé existe|Test-Path -Path "HKLM:\SOFTWARE\MaCle"|
+|Créer une nouvelle clé (dossier)|New-Item -Path "HKLM:\SOFTWARE\MaCle"<br>-Force|
+|Supprimer une clé|Remove-Item -Path<br>"HKLM:\SOFTWARE\MaCle" -Recurse|
+|Lire les valeurs dans une clé|Get-ItemProperty -Path<br>"HKLM:\SOFTWARE\MaCle"|
+|Créer une nouvelle valeur (chaîne, DWORD)|New-ItemProperty -Path<br>"HKLM:\SOFTWARE\MaCle" -Name|
+
+
+
+||"Version" -Value "1.0" -PropertyType String|
+|---|---|
+|Modifier une valeur existante|Set-ItemProperty -Path|
+||"HKLM:\SOFTWARE\MaCle" -Name|
+||"Version" -Value "2.0"|
+
+
+
+## **2. Phase 1 : Exploration des Fournisseurs et Lecteurs Virtuels** 
+
+Toutes les manipulations de cette phase s'effectuent directement en console d'administration. 
+
+### **2.1 Découverte des PSProviders** 
+
+1. Affichez la liste exhaustive des fournisseurs de données disponibles sur votre système : Get-PSProvider 
+
+2. Repérez dans le tableau de sortie les fournisseurs suivants : FileSystem, Registry, Certificate, Environment. 
+
+3. Observez la colonne Drives pour identifier les lettres de lecteurs associées à chaque fournisseur. 
+
+### **2.2 Inventaire des PSDrives actifs** 
+
+1. Listez l'ensemble des lecteurs actuellement montés : Get-PSDrive 
+
+2. Notez la présence de lecteurs non physiques comme : 
+
+   - HKLM ( _HKEY_LOCAL_MACHINE_ ) et HKCU ( _HKEY_CURRENT_USER_ ) pour le registre. 
+
+   - Env pour les variables d'environnement de la session. 
+
+   - Cert pour le magasin des certificats de la machine. 
+
+3. Testez la navigation directe dans l'environnement comme dans un disque dur : Get-ChildItem -Path Env: 
+
+(Get-Item -Path Env:\COMPUTERNAME).Value 
+
+## **3. Phase 2 : Création d'un Lecteur Raccourci (PSDrive Personnalisé)** 
+
+En administration, les chemins de clés de registre sont souvent très longs (ex : HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\...). Pour simplifier la navigation et éviter les erreurs de frappe dans vos scripts, vous pouvez monter un lecteur virtuel temporaire. 
+
+### **3.1 Montage d'un lecteur sur une branche du registre** 
+
+1. Créez un lecteur virtuel nommé **SecPolicies:** pointant directement sur la branche système des politiques Windows : 
+
+New-PSDrive -Name "SecPolicies" -PSProvider "Registry" -Root "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" 
+
+2. Vérifiez que votre nouveau lecteur apparaît bien dans la liste : Get-PSDrive -Name SecPolicies 
+
+3. Consultez immédiatement le contenu de cette branche système via votre raccourci : Get-ItemProperty -Path "SecPolicies:\" 
+
+## **4. Phase 3 : Manipulation Pratique du Registre** 
+
+Dans cette phase, nous allons créer une clé de configuration d'entreprise dédiée à notre parc, y écrire des paramètres, puis les modifier. 
+
+### **4.1 Création de la clé d'entreprise** 
+
+1. Vérifiez si la clé HKLM:\SOFTWARE\EntrepriseConfig existe déjà à l'aide de Test-Path. 
+
+2. Si elle n'existe pas, créez-la à l'aide de New-Item : New-Item -Path "HKLM:\SOFTWARE\EntrepriseConfig" -ItemType Directory -Force 
+
+### **4.2 Écriture et mise à jour de paramètres (ItemProperty)** 
+
+1. Créez une valeur nommée **CodeSite** contenant la chaîne "PARIS-01" : New-ItemProperty -Path "HKLM:\SOFTWARE\EntrepriseConfig" -Name "CodeSite" -Value "PARIS-01" -PropertyType String -Force 
+
+2. Créez une seconde valeur numérique (DWORD) nommée **AuditActif** initialisée à 1 : New-ItemProperty -Path "HKLM:\SOFTWARE\EntrepriseConfig" -Name "AuditActif" -Value 1 -PropertyType DWord -Force 
+
+3. Lisez les valeurs enregistrées pour confirmer l'écriture : Get-ItemProperty -Path "HKLM:\SOFTWARE\EntrepriseConfig" 
+
+4. Mettez à jour la valeur CodeSite pour la remplacer par "LYON-02" à l'aide de Set-ItemProperty : 
+
+Set-ItemProperty -Path "HKLM:\SOFTWARE\EntrepriseConfig" -Name "CodeSite" -Value "LYON-02" 
+
+## **5. Phase 4 : Script d'Audit et de Conformité (audit_registre.ps1)** 
+
+Vous allez maintenant automatiser ce contrôle dans un script nommé **audit_registre.ps1** . 
+
+### **5.1 Cahier des charges du script** 
+
+Le script doit vérifier et garantir la conformité d'une clé de registre d'entreprise : 
+
+1. **Paramètres :** 
+
+   - $CleRegistre : chemin complet de la clé (valeur par défaut : "HKLM:\SOFTWARE\EntrepriseConfig"). 
+
+   - $SiteAttendu : valeur de référence attendue pour le code site (ex : "PARIS-01"). 
+
+   - $Corriger : paramètre commutateur ([switch]). 
+
+2. **Logique de contrôle :** 
+
+   - Tester si la clé existe. Si elle est absente : 
+
+      - Afficher un message d'alerte rouge. 
+
+      - Si le paramètre -Corriger est activé : créer la clé automatiquement. 
+
+   - Interroger la propriété CodeSite : 
+
+      - Si la valeur correspond à $SiteAttendu : afficher en vert que le poste est conforme. 
+
+      - Si la valeur est différente ou absente : afficher un avertissement en jaune indiquant la divergence. 
+
+      - Si -Corriger est activé : appliquer immédiatement la valeur attendue via Set-ItemProperty et confirmer l'action en cyan. 
+
+3. **Exemple d'exécution attendue :** 
+
+   - # 1. Verification simple 
+
+.\audit_registre.ps1 -SiteAttendu "PARIS-01" 
+
+# 2. Verification avec mise en conformite forcee .\audit_registre.ps1 -SiteAttendu "PARIS-01" -Corriger 
+

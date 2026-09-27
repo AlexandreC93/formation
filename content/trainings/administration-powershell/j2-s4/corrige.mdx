@@ -1,137 +1,193 @@
----
-title: Corrigé — Détection d'intrusion
----
+```powershell
+[CmdletBinding()]
+param(
+    [Parameter()]
+    [string]$CheminRapport = ".\Dashboard_Infrastructure.html",
 
-# Corrigé — Détection d'intrusion
+    [Parameter()]
+    [string[]]$ServicesCibles = @("Spooler", "WinRM", "W32Time", "EventLog"),
 
-## Exercice 1
-
-```bash
-# Capture 5 minutes
-IF=$(ip route | grep default | awk '{print $5}' | head -1)
-tcpdump -i $IF -w /tmp/traffic.pcap &
-TDP=$!
-sleep 300
-kill $TDP
-
-# Top 10 couples source:destination
-tcpdump -r /tmp/traffic.pcap -nn -q 2>/dev/null | \
-  awk '{print $3, $5}' | sort | uniq -c | sort -rn | head -10
-
-# Tentatives SSH échouées
-tcpdump -r /tmp/traffic.pcap -nn 'port 22 and tcp[tcpflags] & tcp-rst != 0' 2>/dev/null | head -20
-
-# Requêtes DNS
-tcpdump -r /tmp/traffic.pcap -nn 'port 53' 2>/dev/null | \
-  grep -oE ' [A-Za-z0-9._-]+\.' | sort | uniq -c | sort -rn | head -20
-```
-
-## Exercice 2 — Suricata
-
-```bash
-apt install suricata -y
-suricata-update
-
-# Règle personnalisée anti-nmap
-cat > /etc/suricata/rules/local.rules << 'EOF'
-# Détection User-Agent Nmap
-alert http any any -> any any (
-  msg:"SCAN Nmap HTTP User-Agent détecté";
-  flow:to_server,established;
-  http.user_agent; content:"Nmap";
-  classtype:network-scan;
-  sid:9000001;
-  rev:1;
+    [Parameter()]
+    [switch]$OuvrirNavigateur
 )
 
-# Détection SYN scan rapide
-alert tcp any any -> $HOME_NET any (
-  msg:"SCAN SYN scan détecté";
-  flags:S;
-  flow:stateless;
-  threshold: type threshold, track by_src, count 20, seconds 1;
-  classtype:network-scan;
-  sid:9000002;
-  rev:1;
-)
-EOF
+Write-Host "Collecte des métriques"
 
-# Ajouter la règle locale dans la config
-echo 'rule-files:' >> /etc/suricata/suricata.yaml
-echo '  - /etc/suricata/rules/local.rules' >> /etc/suricata/suricata.yaml
+$NomOS = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -ErrorAction SilentlyContinue).ProductName
+if (-not $NomOS) { $NomOS = [System.Environment]::OSVersion.VersionString }
 
-suricata -T -c /etc/suricata/suricata.yaml  # Test syntaxe
-systemctl restart suricata
+$UptimeJours = [math]::Round(([TimeSpan]::FromMilliseconds([System.Environment]::TickCount)).TotalDays, 1)
+$TotalRAMProcessGo = [math]::Round(((Get-Process | Measure-Object -Property WorkingSet64 -Sum).Sum) / 1GB, 1)
 
-# Test
-nmap -sS 127.0.0.1 &
-jq 'select(.event_type=="alert") | .alert.signature' /var/log/suricata/eve.json | tail -5
-```
+$DonneesSynthese = [PSCustomObject]@{
+    Hote            = $env:COMPUTERNAME
+    Systeme         = $NomOS
+    UptimeJours     = $UptimeJours
+    NbProcessus     = (Get-Process).Count
+    RAM_Processus   = "$TotalRAMProcessGo Go"
+    DateRapport     = (Get-Date -Format "yyyy-MM-dd HH:mm")
+}
 
-## Exercice 3
+$DonneesDisques = Get-PSDrive -PSProvider FileSystem | ForEach-Object {
+    $EspaceTotal = $_.Used + $_.Free
 
-```bash
-# Top 10 IPs brute-force SSH (7 jours)
-journal_args="-u ssh --since '7 days ago'"
-journalctl -u ssh --since "7 days ago" | \
-  grep 'Failed password' | \
-  grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}' | \
-  sort | uniq -c | sort -rn | head -10
+    if ($EspaceTotal -gt 0) {
+        $TailleGo = [math]::Round($EspaceTotal / 1GB, 1)
+        $LibreGo  = [math]::Round($_.Free / 1GB, 1)
+        $LibrePct = [math]::Round(($_.Free / $EspaceTotal) * 100, 1)
+        $Statut   = if ($LibrePct -lt 15) { "CRITIQUE" } else { "OPTIMAL" }
 
-# Connexions hors heures ouvrables
-journalctl -u ssh | grep 'Accepted' | \
-  awk '{h=substr($3,1,2); if(h<8 || h>19) print}' | head -20
+        [PSCustomObject]@{
+            Lecteur       = "$($_.Name):"
+            Racine        = $_.Root
+            TailleTotale  = "$TailleGo Go"
+            EspaceLibre   = "$LibreGo Go"
+            PourcentLibre = "$LibrePct %"
+            EtatSante     = $Statut
+        }
+    }
+}
 
-# Rapport HTML maison
-cat > /tmp/auth-report.html << 'HTML'
-<!DOCTYPE html><html><head>
-<title>Rapport SSH</title>
-<style>body{font-family:monospace;background:#1a1a2e;color:#e0e0e0;padding:20px}
-pre{background:#0f3460;padding:15px;border-radius:8px;overflow-x:auto}</style>
-</head><body>
-<h1>Rapport d'authentification SSH</h1>
-<h2>Tentatives échouées (24h)</h2>
-<pre>
-HTML
-journalctl -u ssh --since "24h ago" | grep 'Failed' | \
-  grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort | uniq -c | sort -rn >> /tmp/auth-report.html
-echo '</pre></body></html>' >> /tmp/auth-report.html
-echo "Rapport : /tmp/auth-report.html"
-```
+$DonneesServices = foreach ($NomService in $ServicesCibles) {
+    $Svc = Get-Service -Name $NomService -ErrorAction SilentlyContinue
 
-## Exercice 4 — Règles avancées
+    if ($null -eq $Svc) {
+        [PSCustomObject]@{
+            NomService   = $NomService
+            NomAffichage = "Service inexistant"
+            Demarrage    = "Inconnu"
+            Statut       = "CRITIQUE"
+        }
+    }
+    else {
+        [PSCustomObject]@{
+            NomService   = $Svc.Name
+            NomAffichage = $Svc.DisplayName
+            Demarrage    = $Svc.StartType
+            Statut       = if ($Svc.Status -eq "Running") { "OPTIMAL" } else { "CRITIQUE" }
+        }
+    }
+}
 
-```bash
-cat >> /etc/suricata/rules/local.rules << 'EOF'
-# LFI /etc/passwd
-alert http any any -> $HTTP_SERVERS any (
-  msg:"WEB LFI tentative /etc/passwd";
-  flow:to_server,established;
-  http.uri; content:"/etc/passwd";
-  classtype:web-application-attack;
-  sid:9000003;
-  rev:1;
-)
+$DonneesProcessus = Get-Process | Sort-Object -Property WorkingSet64 -Descending | Select-Object -First 5 | ForEach-Object {
+    [PSCustomObject]@{
+        PID          = $_.Id
+        NomProcessus = $_.ProcessName
+        MemoireMo    = [math]::Round($_.WorkingSet64 / 1MB, 1)
+        TempsCPU_Sec = [math]::Round($_.CPU, 1)
+    }
+}
 
-# ICMP flood
-alert icmp any any -> any any (
-  msg:"ICMP flood détecté";
-  threshold: type both, track by_dst, count 100, seconds 60;
-  classtype:bad-unknown;
-  sid:9000004;
-  rev:1;
-)
+$StyleCSS = @"
+<style>
+    body {
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        background-color: #f4f6f9;
+        color: #2d3748;
+        margin: 30px;
+    }
+    h1 {
+        color: #1a365d;
+        border-bottom: 3px solid #3182ce;
+        padding-bottom: 8px;
+        margin-bottom: 4px;
+        font-size: 1.8em;
+    }
+    h2 {
+        color: #2b6cb0;
+        margin-top: 30px;
+        margin-bottom: 12px;
+        font-size: 1.25em;
+    }
+    .horodatage {
+        color: #718096;
+        font-size: 0.9em;
+        margin-bottom: 25px;
+    }
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        background: #ffffff;
+        border-radius: 6px;
+        overflow: hidden;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.06);
+        margin-bottom: 20px;
+    }
+    th {
+        background-color: #2b6cb0;
+        color: #ffffff;
+        text-align: left;
+        padding: 10px 14px;
+        font-size: 0.85em;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    td {
+        padding: 9px 14px;
+        border-bottom: 1px solid #e2e8f0;
+        font-size: 0.9em;
+    }
+    tr:nth-child(even) {
+        background-color: #f7fafc;
+    }
+    tr:hover {
+        background-color: #edf2f7;
+    }
+    /* Badges d'alerte */
+    .badge-optimal {
+        background-color: #c6f6d5;
+        color: #22543d;
+        padding: 3px 10px;
+        border-radius: 4px;
+        font-weight: 600;
+        font-size: 0.85em;
+        display: inline-block;
+    }
+    .badge-critique {
+        background-color: #fed7d7;
+        color: #742a2a;
+        padding: 3px 10px;
+        border-radius: 4px;
+        font-weight: 600;
+        font-size: 0.85em;
+        display: inline-block;
+    }
+</style>
+"@
 
-# SSH hors port 22
-alert tcp any any -> $HOME_NET !22 (
-  msg:"SSH hors port standard";
-  flow:to_server;
-  app-layer-protocol:ssh;
-  classtype:policy-violation;
-  sid:9000005;
-  rev:1;
-)
-EOF
+Write-Host "Generation des fragments HTML" -ForegroundColor Gray
 
-suricata -T -c /etc/suricata/suricata.yaml && systemctl reload suricata
+$FragSynthese  = $DonneesSynthese  | ConvertTo-Html -Fragment -PreContent "<h2>Synthèse de l'Hôte</h2>"
+$FragDisques   = $DonneesDisques   | ConvertTo-Html -Fragment -PreContent "<h2>Espace Disque (Get-PSDrive)</h2>"
+$FragServices  = $DonneesServices  | ConvertTo-Html -Fragment -PreContent "<h2>Contrôle des Services Clés</h2>"
+$FragProcessus = $DonneesProcessus | ConvertTo-Html -Fragment -PreContent "<h2>Top 5 - Processus en RAM</h2>"
+
+$CorpsGlobal = @"
+$FragSynthese
+$FragDisques
+$FragServices
+$FragProcessus
+"@
+
+Write-Host "Encapsulation globale et styles" -ForegroundColor Gray
+$EntetePage = "<h1>Tableau de Bord Systeme</h1><p class='horodatage'>geenere le $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') sur la machine <strong>$env:COMPUTERNAME</strong></p>"
+
+$HtmlComplet = ConvertTo-Html -Title "Dashboard - $env:COMPUTERNAME" `
+                              -Head $StyleCSS `
+                              -PreContent $EntetePage `
+                              -Body $CorpsGlobal
+
+Write-Host "Remplacement des statuts par les badges CSS" -ForegroundColor Gray
+
+$HtmlFinal = $HtmlComplet `
+    -replace '<td>OPTIMAL</td>',  '<td><span class="badge-optimal">OPTIMAL</span></td>' `
+    -replace '<td>CRITIQUE</td>', '<td><span class="badge-critique">CRITIQUE</span></td>'
+
+$HtmlFinal | Out-File -FilePath $CheminRapport -Encoding UTF8
+
+Write-Host "Tableau de bord genere avec succes dans : $CheminRapport" -ForegroundColor Green
+
+if ($OuvrirNavigateur) {
+    Invoke-Item -Path $CheminRapport
+}
 ```

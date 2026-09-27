@@ -1,112 +1,91 @@
----
-title: Corrigé — SELinux/AppArmor
----
+```powershell
+[CmdletBinding()]
+param(
+    [Parameter()]
+    [string[]]$Cibles = @("SRV-APP01", "SRV-APP02", "SRV-APP03", "SRV-APP04", "SRV-APP05", "SRV-APP06"),
 
-# Corrigé — Implémentation SELinux/AppArmor
+    [Parameter()]
+    [int]$DelaiSimule = 2,
 
-## Exercice 1
+    [Parameter()]
+    [switch]$ModeSynchrone
+)
 
-```bash
-# Processus confinés (SELinux)
-ps auxZ | grep -v 'system_u\|kernel_t' | head -20
+$script:Resultats = @()
 
-# Mode complain (AppArmor)
-if command -v aa-status &>/dev/null; then
-  aa-status | grep -A5 'complain'
-else
-  # SELinux : mode permissif par processus
-  ps auxZ | grep 'permissive_'
-fi
+$Chrono = Measure-Command {
+    if ($ModeSynchrone) {
 
-# Refus 24h
-if command -v ausearch &>/dev/null; then
-  ausearch -m avc -ts today | audit2why
-else
-  journalctl -k | grep 'apparmor="DENIED"' | tail -20
-fi
-```
+        Write-Host "sequentiel sélectionné." 
 
-## Exercice 2 — Nginx + /opt
+        $script:Resultats = foreach ($Machine in $Cibles) {
+            Write-Host "Traitement de $Machine"
+            Start-Sleep -Seconds $DelaiSimule
 
-```bash
-# Installation
-apt install nginx -y
+            [PSCustomObject]@{
+                Machine       = $Machine
+                PID_Execution = $PID
+                Statut        = "OK"
+                HeureFin      = (Get-Date -Format "HH:mm:ss")
+            }
+        }
+    }
+    else {
 
-# Page dans /opt
-mkdir -p /opt/webapp
-echo '<h1>Formation Sécurité</h1>' > /opt/webapp/index.html
+        Write-Host "PARALLÈLE sélectionné" -ForegroundColor Cyan
+        Write-Host "Lancement de $($Cibles.Count) jobs d'arrière-plan"
 
-# Config nginx
-cat > /etc/nginx/sites-available/webapp << 'EOF'
-server {
-    listen 80;
-    root /opt/webapp;
-    index index.html;
+        $Jobs = foreach ($Machine in $Cibles) {
+            Start-Job -Name "Job_$Machine" -ScriptBlock {
+                param($Nom, $Delai)
+
+                Start-Sleep -Seconds $Delai
+
+                [PSCustomObject]@{
+                    Machine       = $Nom
+                    PID_Execution = $PID
+                    Statut        = "OK"
+                    HeureFin      = (Get-Date -Format "HH:mm:ss")
+                }
+            } -ArgumentList $Machine, $DelaiSimule
+        }
+
+        try {
+            while (($Jobs | Where-Object State -eq 'Running').Count -gt 0) {
+                $Termines = ($Jobs | Where-Object State -ne 'Running').Count
+                $Total    = $Jobs.Count
+                $Ratio    = [math]::Round(($Termines / $Total) * 100)
+
+                Write-Progress -Activity "Exécution des tâches d'audit" `
+                               -Status "$Termines / $Total tâches achevées" `
+                               -PercentComplete $Ratio
+
+                Start-Sleep -Milliseconds 500
+            }
+            Write-Progress -Activity "Exécution des tâches d'audit" -Completed
+
+            $script:Resultats = $Jobs | Receive-Job
+        }
+        finally {
+            $Jobs | Remove-Job -Force
+        }
+    }
 }
-EOF
-ln -sf /etc/nginx/sites-available/webapp /etc/nginx/sites-enabled/
-nginx -t && systemctl reload nginx
 
-# SELinux : fixer le contexte
-semanage fcontext -a -t httpd_sys_content_t '/opt/webapp(/.*)?'
-restorecon -Rv /opt/webapp/
+$DureeTotale = [math]::Round($Chrono.TotalSeconds, 2)
 
-# AppArmor (Ubuntu)
-aa-complain /etc/apparmor.d/usr.sbin.nginx
-# Voir les logs :
-grep 'nginx' /var/log/syslog | grep apparmor | tail -10
-# Puis ajouter dans le profil : /opt/webapp/** r,
-aa-enforce /etc/apparmor.d/usr.sbin.nginx
-```
 
-## Exercice 3 — Profil AppArmor pour Python
-
-```bash
-cat > /etc/apparmor.d/opt.monitor << 'EOF'
-#include <tunables/global>
-
-/usr/bin/python3* /opt/monitor.py {
-  #include <abstractions/base>
-  #include <abstractions/python>
-
-  /opt/monitor.py r,
-  /usr/bin/python3* mr,
-
-  /proc/meminfo r,
-  /proc/cpuinfo r,
-
-  /var/log/monitor.log rw,
-
-  deny /etc/** r,
-  deny /home/** rw,
+if ($ModeSynchrone) {
+    Write-Host "`n[FIN] Durée totale constatée : $DureeTotale secondes." -ForegroundColor Yellow
 }
-EOF
+else {
+    Write-Host ""
+    $script:Resultats | Select-Object -Property Machine, PID_Execution, Statut, HeureFin | Format-Table -AutoSize
 
-apparmor_parser -r /etc/apparmor.d/opt.monitor
-aa-enforce /etc/apparmor.d/opt.monitor
-python3 /opt/monitor.py
-aa-status | grep monitor
-```
 
-## Exercice 4 — Résolution de refus
+    $DureeTheorique = $Cibles.Count * $DelaiSimule
+    $GainPct = [math]::Round(((($DureeTheorique - $DureeTotale) / $DureeTheorique) * 100))
 
-```bash
-# Simulation : déplacer config nginx
-mv /etc/nginx /etc/nginx.bak
-ln -s /opt/nginx-conf /etc/nginx
-ls -laZ /opt/nginx-conf  # Contexte incorrect !
-
-# Identifier le refus
-audit2why < /var/log/audit/audit.log | tail -20
-# ou :
-journalctl -k | grep 'apparmor.*DENIED.*nginx' | tail -5
-
-# Correction SELinux
-semanage fcontext -a -t httpd_config_t '/opt/nginx-conf(/.*)?'
-restorecon -Rv /opt/nginx-conf
-
-# Correction AppArmor : ajouter la règle dans le profil
-# /opt/nginx-conf/** r,
-apparmor_parser -r /etc/apparmor.d/usr.sbin.nginx
-nginx -t && systemctl reload nginx
+    Write-Host "Traitement fini en $DureeTotale secondes (Gain constaté : ~$GainPct %)." -ForegroundColor Green
+}
 ```

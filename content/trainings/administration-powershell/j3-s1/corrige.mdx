@@ -1,94 +1,77 @@
----
-title: Corrigé — Cryptographie appliquée
----
+```powershell
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $false)]
+    [string]$DossierCible = "C:\Windows",
 
-# Corrigé — Cryptographie appliquée
+    [Parameter(Mandatory = $false)]
+    [int]$SeuilMo = 50,
 
-## Exercice 1
+    [switch]$ModeDetaille
+)
 
-```bash
-# Chiffrement
-openssl enc -aes-256-gcm -pbkdf2 -iter 200000 \
-  -in /etc/passwd -out /tmp/passwd.enc -k "P@ssw0rd_F0rmat10n!"
+$DossierAudit = "C:\Audit"
+$FichierLog   = "$DossierAudit\audit.log"
 
-# Vérification : fichier opaque
-head -c 50 /tmp/passwd.enc | strings
+if (-not (Test-Path -Path $DossierAudit)) {
+    New-Item -Path $DossierAudit -ItemType Directory -Force | Out-Null
+}
 
-# Déchiffrement
-openssl enc -d -aes-256-gcm -pbkdf2 -iter 200000 \
-  -in /tmp/passwd.enc -out /tmp/passwd.dec -k "P@ssw0rd_F0rmat10n!"
+function Write-AuditLog {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message,
 
-# Vérification intégrité
-sha256sum /etc/passwd /tmp/passwd.dec
+        [Parameter(Mandatory = $false)]
+        [ValidateSet("INFO", "WARNING", "ERROR")]
+        [string]$Niveau = "INFO"
+    )
 
-# Benchmark
-dd if=/dev/zero bs=1M count=1024 | openssl enc -aes-128-cbc -pass pass:test > /dev/null
-dd if=/dev/zero bs=1M count=1024 | openssl enc -aes-256-gcm -pass pass:test > /dev/null
-# Ou :
-openssl speed aes-128-cbc aes-256-gcm
-```
+    $Horodatage = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    $EntreeLog  = "[$Horodatage] [$Niveau] $Message"
 
-## Exercice 2
+    switch ($Niveau) {
+        "INFO"    { Write-Host $EntreeLog -ForegroundColor Cyan }
+        "WARNING" { Write-Host $EntreeLog -ForegroundColor Yellow }
+        "ERROR"   { Write-Host $EntreeLog -ForegroundColor Red }
+    }
 
-```bash
-# Générer la paire RSA
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -out /tmp/private.pem
-openssl rsa -in /tmp/private.pem -pubout -out /tmp/public.pem
+    $EntreeLog | Add-Content -Path $FichierLog -Encoding UTF8
+}
 
-# Document à signer
-echo "Formation Sécurité Linux - Acte authentique" > /tmp/document.txt
+try {
+    Write-AuditLog -Message "Demarrage de l'audit sur le dossier '$DossierCible' (seuil : $SeuilMo Mo)" -Niveau INFO
 
-# Signature
-openssl dgst -sha256 -sign /tmp/private.pem \
-  -out /tmp/document.sig /tmp/document.txt
+    if (-not (Test-Path -Path $DossierCible)) {
+        throw "Le dossier cible '$DossierCible' est introuvable."
+    }
 
-# Vérification (OK)
-openssl dgst -sha256 -verify /tmp/public.pem \
-  -signature /tmp/document.sig /tmp/document.txt
-# Output : Verified OK
+    $Fichiers = Get-ChildItem -Path $DossierCible -File -ErrorAction Stop
 
-# Après modification
-echo " (modifié)" >> /tmp/document.txt
-openssl dgst -sha256 -verify /tmp/public.pem \
-  -signature /tmp/document.sig /tmp/document.txt
-# Output : Verification Failure
-```
+    $SeuilOctets    = $SeuilMo * 1MB
+    $FichiersLourds = $Fichiers | Where-Object { $_.Length -gt $SeuilOctets }
 
-## Exercice 3
+    if ($null -eq $FichiersLourds -or $FichiersLourds.Count -eq 0) {
+        Write-AuditLog -Message "Aucun fichier ne depasse le seuil de $SeuilMo Mo." -Niveau INFO
+    }
+    else {
+        Write-AuditLog -Message "$($FichiersLourds.Count) fichier(s) depassant le seuil detecte(s)." -Niveau WARNING
 
-```bash
-# Certificat Gmail
-openssl s_client -connect mail.google.com:443 </dev/null 2>/dev/null | \
-  openssl x509 -noout -text | grep -E 'Issuer|Not|Subject:|Signature Algorithm|Public Key'
+        foreach ($Fichier in $FichiersLourds) {
+            $TailleMo = [math]::Round($Fichier.Length / 1MB, 2)
+            Write-AuditLog -Message "Fichier volumineux : $($Fichier.Name) ($TailleMo Mo)" -Niveau WARNING
+        }
+    }
 
-# Suites cryptographiques (avec nmap)
-nmap --script ssl-enum-ciphers -p 443 mail.google.com
-
-# Détection RC4/DES/3DES
-nmap --script ssl-enum-ciphers -p 443 mail.google.com | \
-  grep -iE 'rc4|des|3des|null|anon'
-```
-
-## Exercice 4
-
-```bash
-# Manifest SHA-256
-sha256sum /usr/bin/* 2>/dev/null > /root/manifest-usrbin.sha256
-chmod 600 /root/manifest-usrbin.sha256
-
-# Simulation de modification
-cp /usr/bin/which /usr/bin/which.bak
-echo "# compromis" >> /usr/bin/which
-
-# Détection
-sha256sum -c /root/manifest-usrbin.sha256 2>/dev/null | grep FAILED
-
-# Restauration
-mv /usr/bin/which.bak /usr/bin/which
-
-# Pourquoi pas MD5 :
-# Collisions connues (Wang & Yu, 2004)
-# Création de deux fichiers différents avec même MD5 en <1s
-openssl speed md5 sha256  # MD5 n'est pas plus rapide pour justifier son usage
-echo "MD5 : susceptible aux attaques par collision, ne garantit pas l'intégrité"
+    if ($ModeDetaille) {
+        Write-AuditLog -Message "Mode detaille : $($Fichiers.Count) fichier(s) total analyses dans '$DossierCible'." -Niveau INFO
+    }
+}
+catch {
+    Write-AuditLog -Message "Echec critique de l'audit : $($_.Exception.Message)" -Niveau ERROR
+}
+finally {
+    Write-AuditLog -Message "Session d'audit terminee. Log disponible dans '$FichierLog'." -Niveau INFO
+}
 ```
