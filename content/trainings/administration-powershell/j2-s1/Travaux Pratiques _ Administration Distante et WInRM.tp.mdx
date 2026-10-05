@@ -1,0 +1,38 @@
+# **Administration Distante et WInRM**
+
+## **Exercice 1 : Investigation Interactive (One-to-One)**
+
+1. Depuis votre poste client, ouvrez une session interactive sur le serveur de fichiers srv-01.  
+2. Vérifiez que l'invite de commande a changé pour afficher le nom du serveur distant.  
+3. Exécutez la commande hostname pour confirmer votre présence sur le système distant.  
+4. Interrogez la configuration IP du serveur distant avec Get-NetIPAddress \-AddressFamily IPv4.  
+5. Clôturez proprement la session interactive pour revenir sur votre poste local.
+
+## **Exercice 2 : Exécution Distribuée et Portée des Variables (One-to-Many)**
+
+1. Sur votre poste client (console locale), déclarez une variable \$Cible contenant la chaîne "wuauserv" (le service Windows Update).  
+2. Utilisez Invoke-Command pour interroger **simultanément** l'état de ce service sur srv-01 et srv-02.  
+   *Contrainte :* Vous devez impérativement utiliser votre variable locale \$Cible dans le bloc de script exécuté à distance.  
+3. Filtrez le résultat final avec Select-Object pour n'afficher que trois colonnes :  
+   * Le nom du serveur (PSComputerName)  
+   * Le nom du service (Name)  
+   * L'état du service (Status)
+
+## **Exercice 3 : Optimisation des Performances (Sessions Persistantes)**
+
+1. Créez un pool de sessions persistantes vers srv-01 et srv-02 et stockez-le dans une variable \$PoolServeurs.  
+2. Vérifiez l'état de vos sessions ouvertes avec la commande Get-PSSession.  
+3. Lancez une commande à travers ce pool (via le paramètre \-Session de Invoke-Command) pour récupérer les 3 processus consommant le plus de mémoire vive sur chaque machine.  
+4. Une fois les données récupérées, détruisez les sessions actives en envoyant votre variable \$PoolServeurs dans la commande Remove-PSSession.  
+5. Vérifiez avec Get-PSSession qu'il n'y a plus aucune connexion active en tâche de fond.
+
+## **Exercice 4 : Traitement Asynchrone (Background Jobs)**
+
+1. Lancez un Invoke-Command ciblant srv-01 et srv-02 avec le commutateur permettant l'exécution en arrière-plan.  
+2. Le bloc de script distant devra :  
+   * Faire une pause de 15 secondes (Start-Sleep).  
+   * Renvoyer la date et l'heure du système distant (Get-Date).  
+3. Observez que la console locale vous rend la main instantanément et affiche un objet Job.  
+4. Utilisez la commande d'interrogation des tâches pour surveiller l'état d'avancement (Running puis Completed).  
+5. Récupérez les résultats de la tâche terminée. Prenez soin d'utiliser le paramètre évitant la purge immédiate des données après lecture.  
+6. Supprimez définitivement la tâche de la mémoire locale pour libérer les ressources.
