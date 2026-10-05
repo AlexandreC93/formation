@@ -1,0 +1,60 @@
+# **Scripting Logique et Restitution Visuelle**
+
+## **Exercice 1 : Audit et Coloration Conditionnelle**
+
+1. Créez un nouveau fichier Remediation-Services.ps1.  
+2. Déclarez un tableau \$ServicesCibles contenant les valeurs "Spooler", "wuauserv" et "WinRM".  
+3. Affichez le message de démarrage "=== DÉMARRAGE DE LA ROUTINE D'AUDIT \===" en Cyan.  
+4. Mettez en place une boucle foreach pour parcourir les services du tableau.  
+   *Squelette de syntaxe :*  
+   foreach (\$... in \$...) {  
+       \# Instructions à répéter pour chaque service  
+   }
+
+5. À l'intérieur de la boucle, récupérez l'état du service cible en prenant soin de masquer les erreurs (utilisez le paramètre \-ErrorAction SilentlyContinue).  
+6. Utilisez une instruction switch pour évaluer l'état du service :  
+   *Squelette de syntaxe :*  
+   switch (\$...) {  
+       "Running" {   
+           \# Code si le service tourne  
+       }  
+       "Stopped" {   
+           \# Code si le service est arrêté  
+       }  
+       default {   
+           \# Code pour tout autre état  
+       }  
+   }
+
+   * Si Running : Affichez " OK (Nom du service) est en cours d'exécution." en Vert.  
+   * Si Stopped : Affichez " ALERTE (Nom du service) est arrêté. Tentative de redémarrage..." en Rouge.  
+   * Cas par défaut (default) : Affichez " INFO État inconnu ou transitoire pour (Nom du service)." en Jaune foncé (DarkYellow).  
+7. À l'extérieur et à la fin de la boucle, affichez le message "=== FIN DE LA ROUTINE \===" en Cyan.
+
+## **Exercice 2 : Intégration d'une Barre de Progression**
+
+1. Avant la boucle foreach, stockez le nombre total de services à analyser dans une variable \$Total.  
+   *Astuce :* \$Total \= \$ServicesCibles.Count  
+2. Initialisez un compteur \$i \= 0 avant la boucle.  
+3. Au tout début de votre boucle foreach, incrémentez ce compteur (\$i++) et calculez le pourcentage d'avancement.  
+   *Astuce :* $Pct=[math]::Round(($i / \$Total) \* 100\)  
+4. Affichez la barre de progression avec Write-Progress.  
+   *Syntaxe :* Write-Progress \-Activity "Vérification de la conformité" \-Status "Audit du service : \$Svc" \-PercentComplete \$Pct  
+5. Ajoutez une temporisation de 500 millisecondes à la fin de la boucle pour observer l'animation de la barre à l'écran (Start-Sleep).  
+6. Tout à la fin du script (après la boucle), purgez la barre de progression de l'écran en appelant Write-Progress avec le commutateur \-Completed.
+
+## **Exercice 3 : Remédiation Automatique et Boucle d'Attente (while)**
+
+1. Dans votre bloc switch, modifiez le comportement pour l'état Stopped.  
+2. Ajoutez la commande Start-Service pour relancer le service défaillant (toujours avec \-ErrorAction SilentlyContinue).  
+3. Juste après la tentative de démarrage, affichez le mot "Patientez" en Jaune **sans retour à la ligne** (paramètre \-NoNewline).  
+4. Implémentez une boucle while qui va interroger l'état du service en boucle tant qu'il n'est pas démarré.  
+   *Squelette de syntaxe :*  
+   while ((Get-Service \-Name \$Svc).Status \-ne 'Running') {  
+       \# Instructions à répéter en boucle TANT QUE la condition est vraie  
+   }
+
+5. À l'intérieur de cette boucle while, affichez un point "." en Jaune **sans retour à la ligne** et faites une pause de 1 seconde.  
+6. À la sortie de la boucle while, affichez un message en Vert : "\[SUCCÈS\] (Nom du service) a été redémarré avec succès."
+
+*Test de validation : Arrêtez manuellement le service "Spouleur d'impression" (Spooler) puis exécutez votre script.*
