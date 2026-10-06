@@ -1,0 +1,47 @@
+# **Pilotage Système via les Méthodes CIM**
+
+## **Objectif**
+
+Manipuler l'infrastructure WMI/CIM pour instancier un processus en arrière-plan (Méthode Statique) puis le détruire chirurgicalement (Méthode d'Instance), tout en gérant rigoureusement les codes de retour système.
+
+## **Exercice 1 : Découverte et Inspection de la Classe**
+
+1. Utilisez Get-CimClass pour interroger la classe Win32\_Process.  
+2. Listez les méthodes disponibles pour cette classe.  
+   *Aide syntaxique :*  
+   (Get-CimClass \-ClassName ...).CimClassMethods
+
+3. Isolez la méthode Create et affichez les paramètres qu'elle attend en entrée (InParameters).  
+   *Question : Quel est le nom exact de la propriété permettant de spécifier la commande à lancer ?*
+
+## **Exercice 2 : Exécution Statique (Création d'une ressource)**
+
+Vous allez demander au système d'exploitation de lancer le bloc-notes (notepad.exe) en tâche de fond.
+
+1. Créez une table de hachage nommée \$Arguments contenant la clé identifiée à l'exercice précédent et la valeur "notepad.exe".  
+2. Utilisez Invoke-CimMethod en mode **Statique** (en ciblant le nom de la classe, sans récupérer d'instance au préalable) pour appeler la méthode Create.  
+   *Aide syntaxique :*  
+   \$Resultat \= Invoke-CimMethod \-ClassName ... \-MethodName ... \-Arguments ...
+
+3. Inspectez la variable \$Resultat.  
+4. Écrivez une condition (if) :  
+   * Si la propriété ReturnValue est égale à 0, affichez en vert : "Succès. Le processus a été créé avec le PID : \[Insérez la propriété ProcessId\]".  
+   * Sinon, affichez en rouge : "Échec de création. Code : \[Insérez ReturnValue\]".  
+5. Ouvrez le Gestionnaire des tâches de Windows pour vérifier qu'un processus notepad.exe tourne bien en arrière-plan avec le PID indiqué.
+
+## **Exercice 3 : Exécution d'Instance (Action ciblée)**
+
+Vous allez maintenant détruire **uniquement** le bloc-notes que vous venez de créer, sans impacter les autres processus du système, en utilisant une méthode d'instance.
+
+1. Stockez le PID récupéré à l'exercice précédent dans une variable \$MonPID.  
+2. Utilisez Get-CimInstance pour isoler spécifiquement ce processus en appliquant un filtre WQL strict.  
+   *Aide syntaxique :*  
+   \$Cible \= Get-CimInstance \-ClassName Win32\_Process \-Filter "ProcessId \= \$MonPID"
+
+3. Envoyez cette \$Cible dans le pipeline vers Invoke-CimMethod pour appeler la méthode Terminate.  
+   *(Note : La méthode Terminate ne nécessite pas de paramètres pour forcer l'arrêt immédiat).*  
+   *Aide syntaxique :*  
+   \$Destruction \= \$Cible | Invoke-CimMethod \-MethodName ...
+
+4. Validez que \$Destruction.ReturnValue est bien égal à 0\.  
+5. Vérifiez dans le Gestionnaire des tâches que le processus a disparu.
