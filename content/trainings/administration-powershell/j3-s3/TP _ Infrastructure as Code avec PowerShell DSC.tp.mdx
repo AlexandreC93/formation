@@ -1,0 +1,90 @@
+# **Infrastructure as Code avec PowerShell DSC**
+
+L'objectif de cet atelier est d'abandonner l'approche classique (scripts d'installation avec Install-WindowsFeature) pour adopter une approche purement **déclarative**.
+
+Vous allez concevoir une recette DSC qui garantit que le serveur srv-01 agit comme un serveur Web fonctionnel. Vous testerez ensuite la résilience de cette configuration en tentant de "casser" le serveur manuellement.
+
+## **Exercice 1 : Rédaction de la Configuration Déclarative (Authoring)**
+
+1. Ouvrez votre éditeur de code (Visual Studio Code ou PowerShell ISE) sur votre poste d'administration.  
+2. Créez un nouveau fichier nommé DeploiementWeb.ps1 dans votre dossier C:\\Projets\\.  
+3. Rédigez le bloc de configuration suivant (lisez attentivement les commentaires) :
+
+Configuration DeploiementWeb {  
+    \# Importation du module DSC natif  
+    Import-DscResource \-ModuleName 'PSDesiredStateConfiguration'
+
+    \# Définition de la cible (Le nœud)  
+    Node "srv-01" {  
+          
+        \# 1ère Ressource : S'assurer que le rôle IIS est installé  
+        WindowsFeature RoleWeb {  
+            Ensure \= "Present"  
+            Name   \= "Web-Server"  
+        }
+
+        \# 2ème Ressource : S'assurer que le service tourne  
+        Service ServiceWeb {  
+            Name      \= "W3SVC"  
+            State     \= "Running"  
+            DependsOn \= "\[WindowsFeature\]RoleWeb" \# Ne s'exécute que si IIS est bien installé  
+        }
+
+        \# 3ème Ressource : Pousser une page d'accueil personnalisée  
+        File PageAccueil {  
+            Ensure          \= "Present"  
+            Type            \= "File"  
+            DestinationPath \= "C:\\inetpub\\wwwroot\\index.html"  
+            Contents        \= "\<h1\>Bienvenue sur le serveur Web provisionne par DSC \!\</h1\>"  
+            DependsOn       \= "\[WindowsFeature\]RoleWeb"  
+        }  
+    }  
+}
+
+4. Exécutez le contenu de ce fichier (F5 ou bouton "Play") pour charger la fonction DeploiementWeb en mémoire vive.
+
+## **Exercice 2 : La Compilation (Génération du fichier MOF)**
+
+Maintenant que la "recette" est en mémoire, il faut la compiler dans le standard industriel MOF.
+
+1. Dans la console intégrée de votre éditeur, appelez votre configuration en spécifiant un dossier de destination pour la compilation :  
+   DeploiementWeb \-OutputPath "C:\\DscBuilds"
+
+2. Vérifiez le contenu du dossier généré :  
+   Get-ChildItem \-Path "C:\\DscBuilds"
+
+3. *Question d'analyse :* Quel est le nom exact du fichier qui a été créé ? Ouvrez-le avec un bloc-notes. Retrouvez-vous du code PowerShell ou un format descriptif générique ?
+
+## **Exercice 3 : Le Déploiement (Push)**
+
+Le fichier .mof est prêt. Vous allez l'envoyer au *Local Configuration Manager* (LCM) de srv-01 pour qu'il fasse le travail à votre place.
+
+1. Lancez le déploiement de l'architecture avec la commande suivante :  
+   Start-DscConfiguration \-Path "C:\\DscBuilds" \-Wait \-Verbose \-Force
+
+2. Observez les logs de progression verbeux à l'écran. L'opération prendra environ une ou deux minutes (le temps que Windows installe physiquement le rôle IIS en arrière-plan).  
+3. **Validation fonctionnelle :** Ouvrez un navigateur web sur votre poste client et tapez l'adresse http\://srv-01. Vous devriez voir votre page d'accueil personnalisée.
+
+## **Exercice 4 : Idempotence et Contrôle de la Dérive (Drift)**
+
+L'intérêt du DevOps n'est pas seulement d'installer, mais de **maintenir** l'état désiré.
+
+1. **Test de l'Idempotence :**  
+   Relancez exactement la même commande de déploiement :  
+   Start-DscConfiguration \-Path "C:\\DscBuilds" \-Wait \-Verbose \-Force
+
+   *Observez la vitesse d'exécution. Le LCM lit le MOF, audite le serveur, voit que tout est déjà conforme, et passe la ressource sans rien réinstaller.*  
+2. **Simulation d'un incident (La Dérive) :**  
+   Ouvrez une session PowerShell classique vers srv-01 et arrêtez brutalement le service Web (simulant l'action d'un administrateur imprudent ou d'un incident) :  
+   Invoke-Command \-ComputerName srv-01 \-ScriptBlock { Stop-Service \-Name W3SVC \-Force }
+
+3. **Audit de conformité :**  
+   Demandez à DSC si le serveur respecte toujours le contrat défini par le fichier MOF :  
+   Test-DscConfiguration \-ComputerName srv-01
+
+   *La commande doit retourner \$false.*  
+4. **Remédiation instantanée :**  
+   Au lieu de chercher la panne, on ordonne simplement au LCM de réappliquer le dernier état désiré connu (sans avoir besoin du fichier MOF d'origine, car le LCM l'a gardé en cache) :  
+   Invoke-Command \-ComputerName srv-01 \-ScriptBlock { Update-DscConfiguration \-Wait \-Verbose }
+
+5. Relancez Test-DscConfiguration \-ComputerName srv-01. Le serveur est de nouveau conforme (\$true).

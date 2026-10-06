@@ -1,0 +1,57 @@
+# **PKI, Magasin de Certificats et Signature de Scripts**
+
+## **Objectif**
+
+Manipuler le magasin de certificats via le fournisseur virtuel Cert:, générer un certificat de signature de code (Code Signing) à la volée, et signer numériquement un script PowerShell pour répondre aux exigences d'une politique de sécurité stricte.
+
+## **Exercice 1 : Exploration de l'Infrastructure de Clés (PKI) locale**
+
+PowerShell expose les certificats de l'OS comme un simple disque dur.
+
+1. Naviguez virtuellement à la racine du magasin de certificats.  
+   *Aide syntaxique :* Set-Location \-Path Cert:\\  
+2. Listez les deux "ruches" principales présentes à la racine.  
+3. Affichez tous les certificats personnels actuellement stockés pour l'utilisateur courant.  
+   *Aide syntaxique :*  
+   Get-ChildItem \-Path Cert:\\CurrentUser\\My
+
+4. Recherchez dans le magasin de la Machine Locale (LocalMachine) tous les certificats qui ont expiré (dont la date NotAfter est inférieure à la date d'aujourd'hui).
+
+## **Exercice 2 : Génération d'un Certificat de Code Signing**
+
+Pour signer nos outils, nous avons besoin d'un certificat doté de l'extension *Code Signing*. En l'absence de serveur PKI d'entreprise, nous allons l'auto-générer.
+
+1. Utilisez la cmdlet New-SelfSignedCertificate pour créer un certificat.  
+2. Définissez le sujet (-Subject) à "CN=DevOps Signature TP".  
+3. Spécifiez le type de certificat (-Type) sur CodeSigningCert.  
+4. Stockez ce certificat dans le magasin personnel de l'utilisateur courant (-CertStoreLocation "Cert:\\CurrentUser\\My").  
+5. Capturez le résultat de cette commande dans une variable nommée \$MonCertificat.
+
+## **Exercice 3 : Durcissement et Signature (Le test de vérité)**
+
+Vous allez simuler le déploiement d'une politique de sécurité stricte sur un serveur de production.
+
+1. **Création d'un script de test :**  
+   Créez un petit script nommé Deploiement.ps1 dans C:\\Audit\\ contenant simplement :  
+   Write-Host "Le déploiement critique est en cours d'exécution..." \-ForegroundColor Green
+
+2. **Application de la politique stricte :**  
+   Passez la politique d'exécution de votre session courante en mode AllSigned.  
+   *Aide syntaxique :*  
+   Set-ExecutionPolicy \-ExecutionPolicy AllSigned \-Scope Process \-Force
+
+3. **La sanction :**  
+   Tentez d'exécuter votre script : C:\\Audit\\Deploiement.ps1.  
+   *Constat :* PowerShell bloque l'exécution en rouge car le script ne possède pas de signature Authenticode.  
+4. **La remédiation (Signature) :**  
+   Utilisez Set-AuthenticodeSignature pour signer votre fichier Deploiement.ps1 en utilisant le certificat stocké dans votre variable \$MonCertificat.  
+   *Aide syntaxique :*  
+   Set-AuthenticodeSignature \-FilePath "C:\\Audit\\Deploiement.ps1" \-Certificate \$MonCertificat
+
+5. **Vérification visuelle :**  
+   Ouvrez votre fichier Deploiement.ps1 dans un éditeur de texte (ou via Get-Content). Que remarquez-vous à la fin du fichier ?  
+6. **Exécution finale :**  
+   Relancez votre script C:\\Audit\\Deploiement.ps1.  
+   *(Note : Comme c'est un certificat auto-signé, Windows vous demandera de confirmer si vous faites confiance à cet "éditeur inconnu". Tapez 'A' (Toujours exécuter). En production, avec un certificat d'entreprise, cette question n'apparaîtrait pas).*  
+7. **Vérification d'intégrité (Le Hash) :**  
+   Ouvrez le script, ajoutez un espace n'importe où, sauvegardez, puis tentez de le relancer. Que se passe-t-il ?
