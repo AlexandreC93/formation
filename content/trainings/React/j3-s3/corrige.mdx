@@ -1,0 +1,130 @@
+---
+title: Corrigé — Durcissement SSH
+---
+
+# Corrigé — Durcissement SSH
+
+## Exercice 1
+
+```bash
+# Génération des clés
+for user in ops-admin deployer ci-cd; do
+  ssh-keygen -t ed25519 -C "${user}@formation-2026" \
+    -f ~/.ssh/${user}_ed25519 -N ""
+done
+
+# authorized_keys restreint pour ci-cd
+cat >> ~/.ssh/authorized_keys << 'EOF'
+command="/opt/scripts/deploy.sh",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty ssh-ed25519 AAAA... ci-cd@formation-2026
+EOF
+
+# Clés avec durée limitée (SSH CA)
+ssh-keygen -t ed25519 -f /etc/ssh/ssh_ca -C "Formation SSH CA"
+# Signer une clé utilisateur, valide 8h
+ssh-keygen -s /etc/ssh/ssh_ca -I "ops-admin@formation" \
+  -n ops-admin -V +8h ~/.ssh/ops-admin_ed25519.pub
+# La clé signée : ~/.ssh/ops-admin_ed25519-cert.pub
+```
+
+## Exercice 2
+
+```bash
+cat > /etc/ssh/sshd_config << 'EOF'
+Port 22
+ListenAddress 0.0.0.0
+Protocol 2
+
+# Clés hôtes
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+
+# Authentification
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+
+# Restrictions utilisateurs
+AllowUsers ops-admin deployer
+
+# Timeout et sessions
+LoginGraceTime 20
+MaxAuthTries 3
+MaxSessions 5
+ClientAliveInterval 300
+ClientAliveCountMax 1
+
+# Algorithmes modernes uniquement
+KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org
+HostKeyAlgorithms ssh-ed25519,ecdsa-sha2-nistp521
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com
+MACs hmac-sha2-512-etm@openssh.com
+
+# Sécurité supplémentaire
+AllowAgentForwarding no
+AllowTcpForwarding no
+X11Forwarding no
+PrintLastLog yes
+Banner /etc/ssh/banner.txt
+EOF
+
+echo "[Formation Sécurité] Accès restreint - Toute tentative non autorisée est logguée" > /etc/ssh/banner.txt
+
+sshd -t && systemctl restart sshd
+```
+
+## Exercice 3 — Bastion
+
+```bash
+# ~/.ssh/config
+cat >> ~/.ssh/config << 'EOF'
+Host bastion
+    HostName 10.0.0.1
+    User ops-admin
+    IdentityFile ~/.ssh/ops-admin_ed25519
+    ForwardAgent no
+    StrictHostKeyChecking accept-new
+
+Host prod-*
+    ProxyJump bastion
+    User deployer
+    IdentityFile ~/.ssh/deployer_ed25519
+    ForwardAgent no
+
+Host 10.0.*.*
+    ProxyJump bastion
+    User ops-admin
+    IdentityFile ~/.ssh/ops-admin_ed25519
+EOF
+
+chmod 600 ~/.ssh/config
+
+# Test connexion via bastion
+ssh prod-web01
+
+# Vérifier isolation : depuis l'extérieur, les IPs internes ne répondent pas
+nc -zv 10.0.1.10 22   # Doit échouer depuis l'extérieur
+```
+
+## Exercice 4 — Audit
+
+```bash
+# Installation ssh-audit
+pip3 install ssh-audit 2>/dev/null || apt install ssh-audit -y
+
+# Audit de votre serveur
+ssh-audit 127.0.0.1
+
+# Correctifs pour atteindre A+ :
+# Regener les clès hôtes
+rm /etc/ssh/ssh_host_*
+ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key -N ""
+ssh-keygen -t rsa -b 4096 -f /etc/ssh/ssh_host_rsa_key -N ""
+systemctl restart sshd
+ssh-audit 127.0.0.1
+
+# Détecter les connexions suspectes
+journalctl -u sshd | grep -E 'Failed|Invalid|error' | \
+  awk '{print $1,$2,$3}' | sort | uniq -c | sort -rn | head -10
+```

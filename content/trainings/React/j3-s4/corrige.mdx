@@ -1,0 +1,122 @@
+---
+title: Corrigé — Chiffrement LUKS
+---
+
+# Corrigé — Chiffrement LUKS
+
+## Exercice 1
+
+```bash
+# Créer le fichier-conteneur
+dd if=/dev/urandom of=/opt/conteneur.bin bs=1M count=500 status=progress
+
+# Créer un loop device
+LOOP=$(losetup -f --show /opt/conteneur.bin)
+echo "Loop device : $LOOP"
+
+# Initialiser LUKS2
+cryptsetup luksFormat --type luks2 \
+  --cipher aes-xts-plain64 --key-size 512 \
+  --hash sha256 --iter-time 3000 \
+  $LOOP
+
+# Ouvrir, formater, monter
+cryptsetup luksOpen $LOOP secure-vol
+mkfs.ext4 -L SECURE-DATA /dev/mapper/secure-vol
+mkdir -p /mnt/secure
+mount /dev/mapper/secure-vol /mnt/secure
+
+# Copier des données
+cp /etc/passwd /etc/shadow /mnt/secure/
+ls -la /mnt/secure/
+
+# Fermer
+umount /mnt/secure
+cryptsetup luksClose secure-vol
+
+# Vérifier opacité
+strings /opt/conteneur.bin | head -5  # Doit être vide ou du bruit
+hexdump -C /opt/conteneur.bin | head  # Données chiffrées = entropie
+```
+
+## Exercice 2 — Slots
+
+```bash
+# Keyfile de secours
+dd if=/dev/urandom of=/root/secure-keyfile.bin bs=512 count=1
+chmod 400 /root/secure-keyfile.bin
+
+# Ajouter dans slot 1
+cryptsetup luksAddKey $LOOP /root/secure-keyfile.bin
+
+# Test avec keyfile
+cryptsetup luksOpen $LOOP secure-vol --key-file /root/secure-keyfile.bin
+cryptsetup luksClose secure-vol
+
+# Test avec mot de passe
+cryptsetup luksOpen $LOOP secure-vol
+cryptsetup luksClose secure-vol
+
+# Changer le mot de passe (slot 0)
+cryptsetup luksChangeKey $LOOP  # Demande l'ancien puis le nouveau
+
+# Révoquer le keyfile
+cryptsetup luksDump $LOOP  # Voir les slots
+cryptsetup luksKillSlot $LOOP 1  # Révoquer slot 1
+```
+
+## Exercice 3 — Montage auto
+
+```bash
+# UUID du conteneur
+BLKID=$(cryptsetup luksUUID $LOOP)
+
+# /etc/crypttab
+echo "secure-vol UUID=$BLKID /root/secure-keyfile.bin luks,noearly" >> /etc/crypttab
+
+# /etc/fstab
+echo "/dev/mapper/secure-vol /mnt/secure ext4 defaults,noauto,nofail 0 0" >> /etc/fstab
+
+# Service systemd conditionnel
+cat > /etc/systemd/system/secure-mount.service << 'EOF'
+[Unit]
+Description=Montage volume chiffré
+ConditionPathExists=/root/secure-keyfile.bin
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/cryptsetup luksOpen --key-file /root/secure-keyfile.bin UUID=$BLKID secure-vol
+ExecStart=/bin/mount /dev/mapper/secure-vol /mnt/secure
+ExecStop=/bin/umount /mnt/secure
+ExecStop=/usr/sbin/cryptsetup luksClose secure-vol
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable secure-mount.service
+```
+
+## Exercice 4 — Sauvegarde
+
+```bash
+# Sauvegarder l'en-tête LUKS (critique !)
+cryptsetup luksHeaderBackup $LOOP \
+  --header-backup-file /root/luks-header-backup-$(date +%Y%m%d).bin
+chmod 400 /root/luks-header-backup-*.bin
+
+# Stocker la sauvegarde en dehors du système (clé USB chiffrée, coffre-fort)
+# En environnement gouvernemental : dépôt sécurisé (HSM, armoire forte)
+
+# Simulation de corruption
+dd if=/dev/zero of=$LOOP bs=512 count=2048  # Écrase les 1 Mo du début
+# cryptsetup luksOpen $LOOP secure-vol  # Devrait échouer
+
+# Récupération
+cryptsetup luksHeaderRestore $LOOP \
+  --header-backup-file /root/luks-header-backup-$(date +%Y%m%d).bin
+cryptsetup luksOpen $LOOP secure-vol  # Doit fonctionner à nouveau
+cryptsetup luksDump $LOOP  # Vérifier
+```

@@ -1,0 +1,114 @@
+---
+title: Corrigé — Déploiement WireGuard
+---
+
+# Corrigé — Déploiement WireGuard
+
+## Exercice 1
+
+```bash
+apt install wireguard -y
+
+# Génération clés serveur
+umask 077
+wg genkey | tee /etc/wireguard/server.key | wg pubkey > /etc/wireguard/server.pub
+chmod 600 /etc/wireguard/server.key
+
+SERVER_PRIV=$(cat /etc/wireguard/server.key)
+
+cat > /etc/wireguard/wg0.conf << EOF
+[Interface]
+PrivateKey = $SERVER_PRIV
+Address = 172.16.0.1/24
+ListenPort = 51820
+PostUp   = sysctl -w net.ipv4.ip_forward=1; iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+EOF
+
+chmod 600 /etc/wireguard/wg0.conf
+systemctl enable wg-quick@wg0
+systemctl start wg-quick@wg0
+```
+
+## Exercice 2
+
+```bash
+#!/bin/bash
+SERVER_PUB=$(cat /etc/wireguard/server.pub)
+SERVER_IP=$(curl -s ifconfig.me)
+
+for i in 01 02 03; do
+  IP_LAST=$((10 + 10#$i))
+  umask 077
+  wg genkey | tee /etc/wireguard/client${i}.key | wg pubkey > /etc/wireguard/client${i}.pub
+  CLIENT_PRIV=$(cat /etc/wireguard/client${i}.key)
+  CLIENT_PUB=$(cat /etc/wireguard/client${i}.pub)
+  
+  # Ajouter le pair au serveur
+  wg set wg0 peer "$CLIENT_PUB" allowed-ips "172.16.0.${IP_LAST}/32"
+  
+  # Fichier de config client
+  cat > /etc/wireguard/wg-client${i}.conf << EOF
+[Interface]
+PrivateKey = $CLIENT_PRIV
+Address = 172.16.0.${IP_LAST}/24
+DNS = 172.16.0.1
+
+[Peer]
+PublicKey = $SERVER_PUB
+Endpoint = ${SERVER_IP}:51820
+AllowedIPs = 172.16.0.0/24
+PersistentKeepalive = 25
+EOF
+done
+
+wg-quick save wg0
+wg show
+```
+
+## Exercice 3
+
+```bash
+# État du tunnel
+wg show
+wg show wg0 latest-handshakes
+
+# Test ping
+ping -c3 172.16.0.11
+
+# Vérifier le chiffrement (trafic UDP opaque)
+tcpdump -i eth0 'udp port 51820' -c 10
+# Le contenu doit être illisible (chiffré ChaCha20-Poly1305)
+```
+
+## Exercice 4 — Tunnel SSH persistant
+
+```bash
+apt install autossh -y
+
+# Service systemd pour tunnel persistant
+cat > /etc/systemd/system/ssh-tunnel-db.service << 'EOF'
+[Unit]
+Description=SSH Tunnel vers base de données
+After=network.target
+Restart=always
+
+[Service]
+User=tunnel-user
+ExecStart=/usr/bin/autossh -M 20000 -N \
+  -L 5432:db-interne.lan:5432 \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -o StrictHostKeyChecking=yes \
+  -i /home/tunnel-user/.ssh/id_ed25519 \
+  tunnel@bastion.example.com
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Vérifier les algorithmes SSH
+ssh -vvv -N -o BatchMode=yes bastion.example.com 2>&1 | \
+  grep -E 'kex|server_host_key|cipher|mac'
+```
