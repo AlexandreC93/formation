@@ -1,6 +1,6 @@
 # **Fondamentaux de PowerShell, Système d'Aide et Modèle Objet .NET**
 
----
+Ce document présente la rupture conceptuelle introduite par PowerShell par rapport aux shells textuels traditionnels, son système de nommage normalisé, l'exploitation de son moteur d'aide intégré, ainsi que la manipulation réflexive des objets .NET.
 
 ## **1\. La rupture avec les interpréteurs textuels traditionnels**
 
@@ -8,21 +8,32 @@ Les interpréteurs de commandes historiques (tels que `cmd.exe` sous Windows ou 
 
 PowerShell repose sur un paradigme radicalement distinct :
 
-* **Le transit d'objets en mémoire vive :** Les commandes n'émettent pas du texte, mais des instances d'objets fortement typées issues du runtime .NET (*Common Language Runtime* \- CLR).  
-* **Conservation de la sémantique :** Une commande transmet un objet complet contenant des attributs typés (entiers, booléens, dates, structures complexes) et des méthodes exécutables. Le filtrage ou le tri ne requiert aucune analyse syntaxique de chaînes de caractères.  
+* **Le transit d'objets en mémoire vive :** Les commandes n'émettent pas du texte, mais des instances d'objets fortement typées issues du runtime .NET (*Common Language Runtime* \- CLR).
+
+* **Conservation de la sémantique :** Une commande transmet un objet complet contenant des attributs typés (entiers, booléens, dates, structures complexes) et des méthodes exécutables. Le filtrage ou le tri ne requiert aucune analyse syntaxique de chaînes de caractères.
+
 * **Découplage strict entre données et affichage :** La présentation visuelle en console (mise en forme sous forme de table ou de liste) est une opération terminale gérée par le sous-système de formatage de PowerShell (`Format-Table`, `Format-List`), indépendante de la donnée sous-jacente.
 
 ### **1.2 La nomenclature canonique : Verbe-Nom**
 
 Afin d'uniformiser l'administration du système d'exploitation et des services distants, PowerShell impose une règle de nommage stricte pour ses commandes natives (nommées *cmdlets*) :
 
-$$\text{CMDLET} = \text{Verb} + \text{Noun}$$
+```powershell
+Verbe-Nom (Ex: Get-Process, Start-Service)
+```
 
-* **Le Verbe (*Verb*) :** Identifie l'action précise exécutée par la commande. Microsoft maintient une liste fermée de verbes approuvés garantissant la cohérence sémantique globale. Les verbes respectent des catégories fonctionnelles formelles :  
-  * Cycle de vie : `New`, `Remove`, `Start`, `Stop`, `Restart`.  
-  * Consultation : `Get`, `Find`, `Search`.  
-  * Modification d'état : `Set`, `Update`, `Reset`.  
-  * Sécurité et diagnostic : `Test`, `Assert`, `Protect`.  
+&nbsp;
+
+* **Le Verbe (*Verb*) :** Identifie l'action précise exécutée par la commande. Microsoft maintient une liste fermée de verbes approuvés garantissant la cohérence sémantique globale. Les verbes respectent des catégories fonctionnelles formelles :
+
+  * Cycle de vie : `New`, `Remove`, `Start`, `Stop`, `Restart`.
+
+  * Consultation : `Get`, `Find`, `Search`.
+
+  * Modification d'état : `Set`, `Update`, `Reset`.
+
+  * Sécurité et diagnostic : `Test`, `Assert`, `Protect`.
+
 * **Le Nom (*Noun*) :** Identifie la ressource technique ciblée par l'action. Il est conventionnellement rédigé au singulier (ex. : `Process`, `Service`, `NetAdapter`, `EventLog`).
 
 La commande `Get-Verb` permet d'obtenir à tout moment le catalogue officiel des verbes autorisés et leur finalité opérationnelle :
@@ -32,8 +43,6 @@ Get-Verb
 ```
 
 &nbsp;
-
----
 
 ## **2\. Découverte et Cartographie des Commandes (Get-Command)**
 
@@ -99,8 +108,6 @@ La propriété `CommandType` permet de distinguer la nature technique de l'exéc
 
 &nbsp;
 
----
-
 ## **3\. Le Système d'Aide Intégré et Analyse Syntaxique (Get-Help)**
 
 PowerShell embarque un moteur de documentation exhaustif accessible hors-ligne via la cmdlet **`Get-Help`**.
@@ -156,38 +163,47 @@ SYNTAX
 
 Chaque paragraphe distinct représente un scénario d'exécution exclusif. Il est techniquement impossible de mixer les paramètres uniques de deux jeux distincts au sein du même appel. Pour arrêter un processus, l'opérateur doit choisir d'identifier la cible :
 
-* Soit par son PID numérique (`-Id`),  
-* Soit par son libellé exécutable (`-Name`),  
+* Soit par son PID numérique (`-Id`),
+
+* Soit par son libellé exécutable (`-Name`),
+
 * Soit par un objet processus complet transitant par variable ou pipeline (`-InputObject`).
 
 #### **Règle 2 : La convention des crochets d'obligation**
 
 La disposition typographique des crochets `[` et `]` régit le caractère obligatoire ou facultatif des éléments :
 
-* **Paramètre Obligatoire :** Le nom du paramètre et son argument **ne sont pas** encapsulés dans des crochets globaux.  
-  Dans le jeu 2 : `-Name <System.String[]>` $\rightarrow$ Le paramètre `-Name` est **strictement obligatoire**. L'omission de cet argument bloque l'exécution et force PowerShell à ouvrir une invite de saisie interactive.  
-* **Paramètre Optionnel :** L'ensemble formé par le nom du paramètre et son type est encapsulé dans des crochets.  
+* **Paramètre Obligatoire :** Le nom du paramètre et son argument **ne sont pas** encapsulés dans des crochets globaux.
+
+  Dans le jeu 2 : `-Name <System.String[]>` $\rightarrow$ Le paramètre `-Name` est **strictement obligatoire**. L'omission de cet argument bloque l'exécution et force PowerShell à ouvrir une invite de saisie interactive.
+
+* **Paramètre Optionnel :** L'ensemble formé par le nom du paramètre et son type est encapsulé dans des crochets.
+
   Exemple : `[-Force]` ou `[-PassThru]` $\rightarrow$ Ce sont des commutateurs facultatifs modifiant le comportement interne de la commande.
 
 #### **Règle 3 : Les paramètres positionnels**
 
 Lorsqu'un paramètre est requis, mais que son nom textuel est lui-même entouré de crochets, le paramètre est qualifié de **positionnel** :
 
-* Dans le jeu 1 : `[-Id] <System.Int32[]>`  
-  * Les crochets autour de `[-Id]` indiquent que la mention explicite du mot `-Id` est facultative.  
-  * En revanche, l'argument `<System.Int32[]>` est obligatoire.  
-  * Par conséquent, l'instruction `Stop-Process 4128` est syntaxiquement valide : PowerShell assigne implicitement la valeur entière `4128` au paramètre `-Id` en vertu de sa position.  
-* Dans le jeu 2 : `-Name <System.String[]>`  
+* Dans le jeu 1 : `[-Id] <System.Int32[]>`
+
+  * Les crochets autour de `[-Id]` indiquent que la mention explicite du mot `-Id` est facultative.
+
+  * En revanche, l'argument `<System.Int32[]>` est obligatoire.
+
+  * Par conséquent, l'instruction `Stop-Process 4128` est syntaxiquement valide : PowerShell assigne implicitement la valeur entière `4128` au paramètre `-Id` en vertu de sa position.
+
+* Dans le jeu 2 : `-Name <System.String[]>`
+
   * Le mot `-Name` n'est pas entre crochets : il est obligatoire de taper le nom du paramètre si la position n'est pas supportée dans ce jeu. L'appel doit obligatoirement s'écrire : `Stop-Process -Name "notepad"`.
 
 #### **Règle 4 : La cardinalité des types (Scalaire vs Tableau)**
 
 La présence des caractères `[]` après le type .NET indique que la cmdlet accepte une collection d'éléments séparés par des virgules :
 
-* `<System.String[]>` : Accepte un tableau de chaînes (ex. : `-Name "notepad", "calc", "msedge"`).  
-* `<System.Int32>` sans crochets : N'accepterait qu'un entier unique.
+* `<System.String[]>` : Accepte un tableau de chaînes (ex. : `-Name "notepad", "calc", "msedge"`).
 
----
+* `<System.Int32>` sans crochets : N'accepterait qu'un entier unique.
 
 ## **4\. Le Modèle Objet et l'Exploration Réflexive (Get-Member)**
 
@@ -286,8 +302,6 @@ Elles constituent des fonctions actives embarquées directement dans l'objet, ca
 
 &nbsp;
 
----
-
 ## **5\. Étude de Cas Pratique : Métrologie et Contrôle de Services**
 
 L'analyse du service système Windows Update (`wuauserv`) permet d'observer la puissance opérationnelle de l'introspection d'objets.
@@ -302,31 +316,30 @@ Get-Service -Name wuauserv | Get-Member
 
 #### **Restitution de l'inspection :**
 
-* **Type .NET retourné :** `System.ServiceProcess.ServiceController`. Cet objet est un gestionnaire d'infrastructure directement connecté au gestionnaire de contrôle des services Windows (*Service Control Manager* \- SCM).  
-* **Propriété d'interrogation d'aptitude :**  
+* **Type .NET retourné :** `System.ServiceProcess.ServiceController`. Cet objet est un gestionnaire d'infrastructure directement connecté au gestionnaire de contrôle des services Windows (*Service Control Manager* \- SCM).
+
+* **Propriété d'interrogation d'aptitude :**
+
   La propriété booléenne **`CanPauseAndContinue`** indique si le sous-système du service implémente la capacité de mise en pause sans destruction du thread de traitement :
 
 ```powershell
   (Get-Service -Name wuauserv).CanPauseAndContinue
   # Retourne $false : le service wuauserv ne supporte que l'arrêt complet ou l'exécution.
-  
 ```
 
 &nbsp;
 
-* **Méthode d'action directe :**  
+* **Méthode d'action directe :**
+
   L'objet expose la méthode **`Stop()`**, permettant de déclencher l'arrêt du service directement au niveau applicatif, sans instancier de cmdlet secondaire :
 
 ```powershell
   # Exécution de l'action via la méthode de l'objet
   $Service = Get-Service -Name wuauserv
   $Service.Stop()
-  
 ```
 
 &nbsp;
-
----
 
 ## **6\. Synthèse des Commandes Piliers**
 
