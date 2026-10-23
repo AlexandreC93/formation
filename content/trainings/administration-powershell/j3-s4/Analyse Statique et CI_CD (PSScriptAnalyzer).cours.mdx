@@ -1,0 +1,161 @@
+# **Analyse Statique du Code (PSScriptAnalyzer) et CI/CD**
+
+Ce document aborde l'industrialisation du code PowerShell à travers l'analyse statique. Dans un écosystème DevOps / GitOps, la qualité du code n'est plus une option. Avant même d'être testé fonctionnellement ou déployé, un script doit respecter des standards stricts de sécurité, de lisibilité et de performance.
+
+## **1\. Le Concept du "Shift-Left" en DevOps**
+
+Dans l'administration système traditionnelle, les erreurs de syntaxe, les failles de sécurité ou les mauvaises pratiques (ex: mot de passe en dur) sont souvent découvertes **en production**, au moment de l'exécution du script.
+
+La méthodologie DevOps impose le **Shift-Left** (Décalage vers la gauche) :
+
+**Planification** → **Code** → **Test** → **Déploiement** → **Exploitation**
+
+Dans cette frise chronologique de livraison logicielle, le but est de **détecter les problèmes le plus à gauche possible**, c'est-à-dire directement sur le poste de l'administrateur ou dès le premier *commit* Git, bien avant le déploiement sur les serveurs cibles.
+
+Pour accomplir cela, on utilise un outil d'analyse statique, communément appelé un **Linter**.
+
+## **2\. Présentation de PSScriptAnalyzer**
+
+**PSScriptAnalyzer** est le linter officiel de Microsoft pour PowerShell. C'est un moteur d'analyse statique : il n'exécute pas votre code, il lit le fichier texte (`.ps1`, `.psm1`) et vérifie si la syntaxe et les pratiques respectent des dizaines de règles d'ingénierie préétablies.
+
+### **2.1 Installation**
+
+PSScriptAnalyzer est un module téléchargeable depuis la PowerShell Gallery :
+
+```powershell
+Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser
+```
+
+&nbsp;
+
+### **2.2 Les 3 Niveaux de Sévérité**
+
+Les règles analysées par le moteur sont classées en trois catégories :
+
+| Niveau | Sévérité | Impact opérationnel | Exemples types |
+| :---: | :---- | :---- | :---- |
+| **1** | `Error` | Syntaxe illégale, variable non définie ou faille de sécurité critique. | Mot de passe en texte clair, variable indéfinie. |
+| **2** | `Warning` | Mauvaise pratique risquant de provoquer des comportements inattendus ou de casser la portabilité. | Utilisation d'alias (`ls`, `where`), verbes non approuvés. |
+| **3** | `Information` | Suggestion d'amélioration esthétique ou de lisibilité du code. | Présence de `Write-Host`, non-respect de conventions de casse. |
+
+---
+
+## **3\. L'Audit de Code en Pratique (Invoke-ScriptAnalyzer)**
+
+La cmdlet principale du module est **`Invoke-ScriptAnalyzer`**.
+
+### **3.1 Analyser un fichier spécifique**
+
+```powershell
+Invoke-ScriptAnalyzer -Path "C:\Projets\InfraTools\Public\Get-InfraDisque.ps1"
+```
+
+&nbsp;
+
+**Sortie typique dans la console :**
+
+```
+RuleName                             Severity     ScriptName Line  Message  
+--------                             --------     ---------- ----  -------  
+PSAvoidUsingCmdletAliases            Warning      Get-Infra… 12    'where' is an alias of 'Where-Object'.  
+PSUseDeclaredVarsMoreThanAssignments Warning      Get-Infra… 24    The variable 'Temp' is assigned but never used.  
+PSAvoidUsingWriteHost                Information  Get-Infra… 45    File contains 'Write-Host'. Use Write-Output or Write-Verbose instead.
+```
+
+### **3.2 Analyser un module complet**
+
+Vous pouvez lancer l'audit sur un dossier entier de manière récursive. Cette étape est systématique pour valider un module avant de le publier :
+
+```powershell
+Invoke-ScriptAnalyzer -Path "C:\Projets\InfraTools" -Recurse
+```
+
+&nbsp;
+
+---
+
+## **4\. Les Règles Fréquentes en Entreprise**
+
+Voici les règles les plus souvent déclenchées et la justification de leur remédiation obligatoire :
+
+### **`PSAvoidUsingCmdletAliases` (Bannir les Alias)**
+
+* **Pourquoi :** L'alias `dir`, `ls`, ou `%` est adapté pour taper rapidement en console interactive. Dans un script sauvegardé ou un module d'entreprise, c'est interdit. Un autre administrateur (ou un environnement non-Windows) peut ne pas comprendre l'intention du code. Le code doit être auto-porteur et descriptif (`Get-ChildItem`, `ForEach-Object`).  
+* **Correction :** Remplacer systématiquement l'alias par le nom complet canonique de la cmdlet.
+
+### **`PSAvoidUsingWriteHost` (Bannir Write-Host)**
+
+* **Pourquoi :** `Write-Host` écrit directement dans le flux d'affichage de la console hôte sans transiter par le pipeline d'objets standard. Il empêche toute redirection, capture ou automatisation dans un orchestrateur.  
+* **Correction :** Utiliser `Write-Output` (pour émettre de la donnée métier exploitable) ou `Write-Verbose` / `Write-Information` (pour consigner des journaux de diagnostic).
+
+### **`PSUseApprovedVerbs` (Verbes non conformes)**
+
+* **Pourquoi :** PowerShell maintient une nomenclature normalisée stricte basée sur la liste officielle de Microsoft (`Get-Verb`). Nommer une fonction `Ping-Server` ou `Check-Disk` brise la cohérence du catalogue et déclenche des avertissements d'importation.  
+* **Correction :** Utiliser `Test-Connection` (famille de diagnostic *Test*) ou `Get-DiskHealth` (famille de consultation *Get*).
+
+### **`PSAvoidUsingPlainTextForPassword` (Sécurité critique)**
+
+* **Pourquoi :** La règle détecte des variables nommées `$Password` ou `$Cred` auxquelles est assignée une chaîne textuelle non chiffrée (ex: `"P@ssw0rd123"`). Cette pratique expose le secret dans les journaux d'événements (Event ID 4104\) et dans les dépôts de versions.  
+* **Correction :** Paramétrer les fonctions avec des types `[PSCredential]` ou consommer des identifiants via le coffre `Microsoft.PowerShell.SecretStore`.
+
+---
+
+## **5\. Personnalisation et Fichier de Paramètres (Settings)**
+
+Chaque organisation définit son propre niveau de tolérance. Il est possible d'ajuster ou d'exclure certaines règles du Linter (par exemple, si une équipe assume l'utilisation de `Write-Host` pour des menus interactifs en console).
+
+La bonne pratique DevOps consiste à consigner ces règles dans un fichier de configuration déclaratif au format `.psd1`.
+
+### **Création du fichier `PSScriptAnalyzerSettings.psd1` :**
+
+```powershell
+@{
+    # Inclure par défaut toutes les règles natives Microsoft
+    IncludeDefaultRules = $true
+
+    # Liste formelle des règles exclues pour ce projet
+    ExcludeRules = @(
+        'PSAvoidUsingWriteHost'
+    )
+}
+```
+
+&nbsp;
+
+### **Exécution avec le fichier de paramètres :**
+
+```powershell
+Invoke-ScriptAnalyzer -Path ".\MonScript.ps1" -Settings ".\PSScriptAnalyzerSettings.psd1"
+```
+
+&nbsp;
+
+---
+
+## **6\. Intégration Continue (Le Pont vers la CI/CD)**
+
+C'est ici que l'analyse statique prend toute sa valeur opérationnelle : `PSScriptAnalyzer` n'est pas conçu pour n'être exécuté qu'à la main, il agit comme **gardien du dépôt Git** (*Quality Gate*).
+
+### **Le Pipeline de validation CI/CD**
+
+Dans un ordonnanceur comme **GitLab CI**, **GitHub Actions** ou **Azure DevOps**, un pipeline automatisé s'exécute à chaque événement de `git push`.
+
+Le pipeline instancie un conteneur éphémère (*Runner*) et exécute l'analyse statique de manière bloquante :
+
+```powershell
+# Étape de Linting dans le pipeline d'intégration continue
+$Violations = Invoke-ScriptAnalyzer -Path ".\Src\" -Recurse | Where-Object Severity -in "Error", "Warning"
+
+if ($Violations) {
+    Write-Error "ÉCHEC DE LA CI : Des violations aux standards ont été détectées."
+    $Violations | Format-Table -Property RuleName, ScriptName, Line, Message -AutoSize
+    exit 1  # Le code de sortie 1 fait échouer le Job CI
+} else {
+    Write-Host "SUCCÈS : Code conforme aux standards d'ingénierie." -ForegroundColor Green
+    exit 0
+}
+```
+
+&nbsp;
+
+**Conséquence :** Si un script introduit un alias ou un mot de passe en texte brut, le job échoue avec un code de sortie non nul. La fusion (*Merge Request*) est rejetée et le script ne peut pas atteindre les environnements de staging ou de production.
