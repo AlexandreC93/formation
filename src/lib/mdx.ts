@@ -4,6 +4,7 @@ import { join } from 'path';
 import rehypePrettyCode from 'rehype-pretty-code';
 import remarkGfm from 'remark-gfm';
 import { resolveSegmentFiles, sanitizeTitle } from './trainings';
+import { redis } from './redis';
 import type { JSX } from 'react';
 
 export type MdxType = 'cours' | 'tp' | 'corrige';
@@ -12,6 +13,8 @@ export interface MdxResult {
   content?: JSX.Element;
   frontmatter?: Record<string, unknown>;
   error?: string;
+  isOverridden?: boolean; // true si le contenu vient de Redis
+  rawContent?: string;    // contenu brut pour l'éditeur
 }
 
 const rehypePrettyCodeOptions = {
@@ -52,7 +55,11 @@ export async function loadMDX(
   );
 
   try {
-    let raw = await readFile(filePath, 'utf-8');
+    // 1. Vérifier si un override Redis existe
+    const overrideKey = `content_override:${trainingId}:${segmentSlug}:${type}`;
+    const redisContent = await redis.get<string>(overrideKey);
+    const raw = redisContent ?? await readFile(filePath, 'utf-8');
+    const isOverridden = !!redisContent;
     
     let h1Title = '';
     // Extraction du titre H1 si présent (mais sans le supprimer du flux)
@@ -80,7 +87,7 @@ export async function loadMDX(
       frontmatter.title = cleanFilenameToTitle(mdxFilename);
     }
 
-    return { content, frontmatter };
+    return { content, frontmatter, isOverridden, rawContent: raw };
   } catch (error) {
     console.error(`[MDX Render Error on ${segmentSlug} - ${type}]:`, error);
     return {

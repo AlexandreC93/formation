@@ -25,6 +25,7 @@ import {
   Archive,
 } from 'lucide-react';
 import { ThemeToggle } from '@/components/theme-toggle';
+import { AdminContentViewer } from '@/components/admin-content-viewer';
 
 export const dynamic = 'force-dynamic';
 
@@ -324,6 +325,9 @@ export default async function AdminPage() {
             </div>
           );
         })}
+
+        {/* Visualiseur & Éditeur de Contenus */}
+        <AdminContentViewer trainings={trainings} />
 
         {/* Panneau de Debug Redis */}
         <div className="mt-16 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-2xl p-6">
