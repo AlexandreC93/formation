@@ -1,0 +1,130 @@
+# Conception et validation d'un profil Kickstart
+
+## Objectif
+
+Vous êtes chargé de préparer le fichier d'installation automatisée (`ks.cfg`) qui servira de standard pour déployer les nouveaux serveurs Rocky Linux 9 de l'infrastructure.
+
+Afin de valider votre fichier sans dépendre de la création d'une machine virtuelle vierge, vous allez analyser le profil généré lors de l'installation de votre machine, concevoir un profil Kickstart complet intégrant du partitionnement LVM et des scripts dynamiques (`%pre` et `%post`), puis contrôler sa conformité syntaxique et tester sa logique d'exécution.
+
+Toutes les opérations s'effectuent sur la machine **Master** dans le répertoire de travail `~/tp-kickstart/`.
+
+## 2\. Préparation et analyse de l'existant
+
+### 2.1 Installation des outils et création de l'espace de travail
+
+1. Créez le répertoire `~/tp-kickstart/` et positionnez-vous dedans.
+
+2. Installez le paquet **`pykickstart`** qui fournit l'analyseur syntaxique `ksvalidator`, ainsi que le paquet **`openssl`** s'il n'est pas présent.
+
+3. Vérifiez les versions de grammaires supportées par l'outil à l'aide de la commande `ksvalidator -l | grep RHEL`.
+
+### 2.2 Audit du fichier de référence Anaconda
+
+Lors de l'installation initiale de votre serveur Rocky Linux, l'installateur Anaconda a enregistré sa configuration dans `/root/anaconda-ks.cfg`.
+
+1. Copiez le fichier `/root/anaconda-ks.cfg` dans votre dossier `~/tp-kickstart/reference-ks.cfg` et attribuez-en la propriété à votre utilisateur courant pour pouvoir le lire sans privilèges `sudo`.
+
+2. Analysez le contenu de ce fichier et relevez :
+
+   * Le mode de configuration réseau retenu lors de l'installation initiale.  
+   * Le nom du disque cible et la structure de partitionnement appliquée.  
+   * La liste des paquets ou groupes présents dans la section `%packages`.
+
+## 3\. Conception du fichier Kickstart standardisé
+
+Vous devez rédiger un nouveau fichier nommé `~/tp-kickstart/production-rocky9.ks` répondant aux spécifications suivantes.
+
+### 3.1 Paramètres généraux, sécurité et comptes
+
+1. **Mode d'exécution :** Installation en mode texte (`text`) avec redémarrage automatique à la fin (`reboot`).
+
+2. **Localisation :** Langue `fr_FR.UTF-8`, clavier `fr` et fuseau horaire `Europe/Paris` avec horloge matérielle réglée sur `UTC`.
+
+3. **Source d'installation :** Média optique local (`cdrom`).
+
+4. **Sécurité :**
+
+   * SELinux activé en mode strict (`--enforcing`).  
+   * Pare-feu local activé (`--enabled`) autorisant uniquement les services `ssh` et `http`.  
+5. **Réseau :** Configuration par défaut en `dhcp` sur l'interface active (`--device=link`), activée au démarrage avec le nom d'hôte `srv-std.infra.lan`.
+
+6. **Authentification :**
+
+   * Générez un condensat SHA-512 pour le mot de passe `RockyAdmin2026` à l'aide d'OpenSSL.  
+   * Configurez le mot de passe `root` avec ce condensat (`rootpw --iscrypted ...`).  
+   * Créez un utilisateur d'exploitation nommé `ops` appartenant au groupe `wheel`, doté du même mot de passe chiffré.  
+   * Injectez la clé publique SSH de votre utilisateur courant (située dans `~/.ssh/id_ed25519.pub` ou `~/.ssh/id_rsa.pub` ; générez-en une avec `ssh-keygen` si elle n'existe pas encore) pour le compte `ops` via la directive `sshkey`.
+
+### 3.2 Détection dynamique du stockage (`%pre` et `%include`)
+
+Plutôt que de figer le nom du disque en dur (`sda` ou `vda`), le schéma de partitionnement doit être généré par un script `%pre` dans `/tmp/part-layout.cfg` et appelé via la directive `%include /tmp/part-layout.cfg` :
+
+1. **Détection matérielle :** Le script `%pre` doit identifier automatiquement le nom du premier disque dur bloc présent sur la machine à l'aide de `lsblk`.
+
+2. **Table de partitionnement et chargeur :**
+
+   * Initialiser les tables de partitions (`zerombr` et `clearpart --all --initlabel`) sur le disque détecté.  
+   * Installer le chargeur de démarrage GRUB2 dans le MBR de ce disque.  
+3. **Schéma LVM et systèmes de fichiers :**
+
+   * Une partition standard `/boot` en `xfs` de `1024 Mo`.  
+   * Un volume physique LVM (`pv.01`) occupant l'espace restant (`--size=8192 --grow`).  
+   * Un groupe de volumes nommé `vg_os` (taille d'extent `4096 Ko`).  
+   * Quatre volumes logiques au sein de `vg_os` :  
+     * `lv_swap` : type `swap`, taille `2048 Mo`.  
+     * `lv_root` : monté sur `/`, type `xfs`, taille `6144 Mo`.  
+     * `lv_var` : monté sur `/var`, type `xfs`, taille `2048 Mo`.  
+     * `lv_tmp` : monté sur `/tmp`, type `xfs`, taille `1024 Mo`, avec les options de montage de sécurité `nodev,nosuid,noexec`.
+
+### 3.3 Sélection des paquets (`%packages`)
+
+Déclarez la section `%packages` pour installer :
+
+* L'environnement minimal (`@^minimal-environment`).
+
+* Les paquets `vim-enhanced`, `curl`, `wget`, `tar`, `rsync` et `python3`.
+
+* Excluez les firmwares sans fil inutiles sur un serveur (`-iwl*`).
+
+### 3.4 Durcissement de post-installation (`%post`)
+
+Ajoutez un bloc `%post` journalisé dans `/root/ks-post.log` réalisant les trois opérations suivantes :
+
+1. Créer le fichier `/etc/sudoers.d/ops-nopasswd` (permissions `0440`) autorisant les membres du groupe `wheel` à exécuter `sudo` sans mot de passe.
+
+2. Désactiver la connexion SSH directe du compte `root` en modifiant ou en ajoutant la directive `PermitRootLogin no` dans `/etc/ssh/sshd_config.d/10-hardening.conf`.
+
+3. Écrire dans `/etc/motd` une bannière indiquant : `Serveur Rocky Linux 9 deploye automatiquement par Kickstart`.
+
+## 4\. Validation et contrôle qualité
+
+### 4.1 Test unitaire du script `%pre`
+
+Avant de valider le fichier complet, vérifiez que votre logique de détection de disque fonctionne sur votre machine actuelle :
+
+1. Extrayez les commandes de votre bloc `%pre` dans un script temporaire `/tmp/test-pre.sh` et exécutez-le.
+
+2. Affichez le contenu du fichier `/tmp/part-layout.cfg` généré et vérifiez que la variable contenant le nom du disque a bien été remplacée par le disque réel de votre machine (`sda`, `vda` ou `nvme0n1`).
+
+### 4.2 Validation syntaxique avec `ksvalidator`
+
+1. Passez votre fichier `~/tp-kickstart/production-rocky9.ks` au validateur syntaxique pour la cible `RHEL9` :
+
+```
+ksvalidator -v RHEL9 ~/tp-kickstart/production-rocky9.ks
+
+```
+
+2. Vérifiez que le code de retour (`echo $?`) vaut bien `0`.
+
+3. **Test de détection d'erreur :** Introduisez volontairement une faute de syntaxe dans une directive (par exemple en remplaçant `clearpart --all` par `clearpart --tout`), relancez `ksvalidator -v RHEL9` pour observer le message de diagnostic, puis corrigez l'erreur.
+
+## Synthèse
+
+| Fichier / Vérification | Critère de validation |
+| :---- | :---- |
+| `~/tp-kickstart/production-rocky9.ks` | Fichier complet contenant les 4 sections, mots de passe hachés en SHA-512 et clé SSH injectée. |
+| `/tmp/part-layout.cfg` | Fichier généré par le test du script `%pre` contenant le nom du disque local et la structure LVM. |
+| `ksvalidator -v RHEL9` | Aucune sortie d'erreur et code retour `$?` égal à `0`. |
+
+&nbsp;
