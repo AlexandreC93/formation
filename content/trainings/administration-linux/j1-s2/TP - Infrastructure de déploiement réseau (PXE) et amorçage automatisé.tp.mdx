@@ -1,0 +1,104 @@
+# Infrastructure de déploiement réseau (PXE) et amorçage automatisé
+
+## Objectifs
+
+On veut transformer le nœud Master en un serveur de déploiement réseau complet. Il s'agit de mettre en place l'architecture permettant d'amorcer une machine distante via le réseau (PXE) et de lui fournir automatiquement les instructions d'installation (Kickstart).
+
+Les opérations de ce TP s'effectuent intégralement sur la machine **Master** (`192.168.4.100`), avec les privilèges d'administration.
+
+Avertissement : l'activation d'un service DHCP doit être strictement confinée à l'interface du réseau de travaux pratiques (`eth1` ou `ens34` selon votre hyperviseur, connectée au réseau interne `192.168.4.0/24`) pour prévenir tout conflit d'adressage IP sur le réseau de l'établissement.
+
+## 2\. Installation des services d'infrastructure
+
+Installez les paquets nécessaires pour fournir les protocoles DHCP, TFTP et HTTP.
+
+1. Installez les paquets `dhcp-server`, `tftp-server`, `nginx` et le client de test `tftp`.
+
+2. Identifiez le nom exact de l'interface réseau du Master connectée au sous-réseau `192.168.4.0/24` en utilisant la commande `ip address show`.
+
+3. Dans le fichier de configuration `/etc/default/isc-dhcp-server` (ou `/etc/sysconfig/dhcpd` selon la distribution sous-jacente), restreignez l'écoute du serveur DHCP à cette interface spécifique.
+
+## 3\. Configuration du service DHCP
+
+Le service DHCP doit fournir une adresse IP dynamique aux clients PXE et les rediriger vers le serveur TFTP.
+
+1. Éditez le fichier `/etc/dhcp/dhcpd.conf`.
+
+2. Déclarez le sous-réseau `192.168.4.0` avec le masque `255.255.255.0`.
+
+3. Configurez une plage d'adresses dynamiques (`range`) allant de `192.168.4.150` à `192.168.4.199`.
+
+4. Ajoutez les options de routage et de résolution DNS de base.
+
+5. Intégrez les directives spécifiques à l'amorçage PXE :
+
+   * Définissez le `next-server` pointant vers l'adresse IP du Master (`192.168.4.100`).  
+   * Spécifiez le fichier de démarrage via la directive `filename "grubx64.efi"`.  
+6. Démarrez le service DHCP et configurez son lancement automatique au démarrage du système. Vérifiez son statut pour confirmer l'absence d'erreurs de syntaxe.
+
+## 4\. Configuration du serveur TFTP et du chargeur GRUB2
+
+Le service TFTP va héberger l'exécutable UEFI et le menu de démarrage.
+
+1. Démarrez et activez le service `tftpd-hpa` (ou `tftp.socket`). Le répertoire de travail par défaut est `/var/lib/tftpboot/` (ou `/srv/tftp/`).
+
+2. Simulez la présence du chargeur UEFI en créant un fichier texte vide nommé `grubx64.efi` dans le répertoire TFTP (la copie du véritable binaire extrait d'une ISO n'est pas requise pour cette validation théorique).
+
+3. Créez le fichier de configuration `/var/lib/tftpboot/grub.cfg` contenant l'entrée de menu de déploiement automatisé :
+
+```
+set default="0"
+set timeout=5
+
+menuentry 'Deploiement Automatique Rocky Linux 9' {
+    linuxefi rocky9/vmlinuz inst.repo=http://192.168.4.100/os/rocky9/ inst.ks=http://192.168.4.100/ks/production-rocky9.ks console=tty0 console=ttyS0,115200n8
+    initrdefi rocky9/initrd.img
+}
+```
+
+## 5\. Configuration du serveur HTTP
+
+Le serveur Web Nginx expose les sources d'installation et le fichier Kickstart.
+
+1. Créez l'arborescence nécessaire dans le répertoire web par défaut :
+
+   * `/var/www/html/os/rocky9/` (destiné à accueillir le contenu de l'image ISO).  
+   * `/var/www/html/ks/` (destiné à héberger le fichier Kickstart).  
+2. Modifiez la configuration de Nginx (généralement `/etc/nginx/sites-available/default` ou `/etc/nginx/nginx.conf`) pour activer le listage des répertoires (`autoindex on;`) dans le bloc `location /`.
+
+3. Démarrez et activez le service Nginx.
+
+4. Copiez le fichier `production-rocky9.ks` validé lors du TP J1S1 dans le répertoire `/var/www/html/ks/`.
+
+## 6\. Validation de l'infrastructure de déploiement
+
+Afin de valider la configuration technique de votre serveur Master sans nécessiter le démarrage d'une machine virtuelle supplémentaire, effectuez les contrôles de flux locaux suivants.
+
+### 6.1 Validation du service DHCP
+
+Vérifiez que le service écoute correctement sur le port UDP 67 : Exécutez la commande `ss -ulnp` et identifiez le processus `dhcpd` ou `isc-dhcp-server`.
+
+### 6.2 Validation du service TFTP
+
+Simulez le comportement d'une carte réseau cliente en téléchargeant le chargeur de démarrage via le client TFTP en ligne de commande :
+
+1. Positionnez-vous dans le répertoire `/tmp/`.  
+2. Exécutez la commande : `tftp 192.168.4.100 -c get grubx64.efi`  
+3. Vérifiez que le fichier a bien été transféré dans `/tmp/` sans message d'erreur d'autorisation ou de délai dépassé.
+
+### 6.3 Validation du service HTTP
+
+Simulez le téléchargement du fichier Kickstart par l'installateur Anaconda :
+
+1. Exécutez la commande : `curl -I http://192.168.4.100/ks/production-rocky9.ks`  
+2. Le serveur Nginx doit retourner un code d'état `HTTP/1.1 200 OK`.
+
+## Synthèse des livrables attendus
+
+| Composant | Critère de validation |
+| :---- | :---- |
+| **DHCP** | Statut actif, écoute sur le port UDP 67, distribution sur le réseau interne. |
+| **TFTP** | Téléchargement local réussi du fichier `grubx64.efi` via le client `tftp`. |
+| **HTTP** | Retour de la commande `curl -I` sur le fichier Kickstart en statut 200 OK. |
+
+&nbsp;

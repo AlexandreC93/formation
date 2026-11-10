@@ -1,0 +1,75 @@
+# Fondamentaux d'Ansible, Inventaire et Commandes Ad-Hoc
+
+## 1\. Contexte
+
+Vos serveurs ont été déployés par Kickstart (Day-0). Ils disposent désormais d'une adresse IP, d'un accès réseau fonctionnel et du service OpenSSH actif. Vous devez maintenant en prendre le contrôle via Ansible (Day-2) pour automatiser leur gestion sans jamais vous y connecter interactivement.
+
+Vous disposez des éléments suivants :
+
+* **Nœud de contrôle (Master) :** `192.168.4.100` (Utilisateur `formation`)  
+* **Nœud managé 1 (`node1`) :** `192.168.4.101`  
+* **Nœud managé 2 (`node2`) :** `192.168.4.102`
+
+L'authentification s'effectuera via la paire de clés SSH générée sur votre poste Master (la clé publique a été préalablement injectée sur les cibles par le Kickstart).
+
+## 2\. Objectifs
+
+* Initialiser un espace de travail Ansible portable.  
+* Configurer le fichier d'inventaire (`inventory.ini`) et le fichier de comportement (`ansible.cfg`).  
+* Valider la connectivité "Agentless" (SSH \+ Python) sur l'ensemble du parc.  
+* Utiliser les commandes Ad-Hoc pour réaliser des audits et des opérations unitaire d'urgence.  
+* Concevoir un premier Playbook YAML et démontrer mathématiquement le principe d'idempotence.
+
+## 3\. Cahier des charges
+
+Toutes les commandes de ce TP doivent être exécutées exclusivement depuis le **Master** en tant qu'utilisateur `formation`.
+
+### Étape 1 : Préparation de l'authentification et de l'environnement
+
+1. Si ce n'est pas déjà fait, générez une paire de clés SSH sur le Master (sans phrase secrète pour l'automatisation) avec la commande `ssh-keygen -t ed25519`.  
+2. Transférez la clé publique sur `node1` et `node2` à l'aide de l'utilitaire `ssh-copy-id formation@192.168.4.101` (et .102). Validez que vous pouvez vous connecter sans mot de passe.  
+3. Créez votre répertoire de travail principal : `~/tp-ansible/` et placez-vous à l'intérieur.
+
+### Étape 2 : L'inventaire et la configuration (`ansible.cfg`)
+
+Dans le dossier `~/tp-ansible/`, vous allez définir l'architecture de votre projet :
+
+1. Créez un fichier `inventory.ini`. Déclarez-y un groupe `[production_nodes]` contenant `node1` et `node2` avec leurs adresses IP respectives (`ansible_host=...`).  
+2. Déclarez un bloc `[production_nodes:vars]` pour préciser :  
+   * L'utilisateur de connexion : `ansible_user=formation`  
+   * L'interpréteur Python cible : `ansible_python_interpreter=/usr/bin/python3`  
+3. Créez le fichier de configuration `ansible.cfg` à la racine de votre dossier de travail.  
+4. Configurez-le pour qu'il :  
+   * Pointe automatiquement vers votre inventaire local `./inventory.ini`.  
+   * Désactive la vérification stricte des clés SSH (`host_key_checking = False`).  
+   * Active le `pipelining` pour accélérer l'exécution.  
+   * Configure l'élévation de privilèges (`become_method = sudo`), mais désactivée par défaut (`become = False`).
+
+### Étape 3 : Validation et Commandes Ad-Hoc
+
+Maintenant que l'environnement est configuré, utilisez les commandes Ad-Hoc (`ansible`) pour auditer le parc :
+
+1. **Validation du socle :** Utilisez le module `ping` sur l'ensemble de l'inventaire (`all`). Le statut retourné doit être `pong` en vert.  
+2. **Audit système :** Utilisez la commande par défaut (sans préciser `-m`) pour faire afficher la charge (`uptime`) des serveurs du groupe `production_nodes`.  
+3. **Élévation de privilèges :** Tentez d'afficher le contenu du fichier sécurisé `/etc/shadow`. La commande doit échouer avec "Permission denied".  
+4. **Correction :** Relancez la même commande en ajoutant l'argument `--become` (ou `-b`). Observez le succès de l'opération.
+
+### Étape 4 : Le premier Playbook et la preuve d'idempotence
+
+Les commandes Ad-Hoc sont volatiles. Vous allez maintenant créer une configuration persistante.
+
+1. Créez un fichier `deploy_htop.yml` dans votre dossier de travail.  
+2. Rédigez le scénario (Play) ciblant le groupe `production_nodes` avec l'élévation de privilèges activée.  
+3. Déclarez une tâche utilisant le module natif `ansible.builtin.apt` pour installer le paquet `htop`.  
+4. **Preuve d'idempotence (1er passage) :** Exécutez le playbook avec la commande `ansible-playbook deploy_htop.yml`. *Observez la couleur (jaune) et le statut (`changed=1`). L'action a été réalisée sur le système.*  
+5. **Preuve d'idempotence (2ème passage) :** Relancez **immédiatement** la même commande. *Observez la couleur (vert) et le statut (`changed=0`). Ansible a évalué l'état et s'est abstenu de toute action inutile.*
+
+## 4\. Critères
+
+Pour valider cette étape d'initialisation devant le formateur, exécutez la commande suivante depuis votre répertoire `~/tp-ansible/` :
+
+```sh
+ansible production_nodes -b -m ansible.builtin.apt -a "name=curl state=present"
+```
+
+&nbsp;

@@ -1,0 +1,168 @@
+# Infrastructure de déploiement réseau (PXE) et amorçage automatisé
+
+## PARTIE 1 : ARCHITECTURE DU DÉPLOIEMENT RÉSEAU
+
+## 1\. Principes fondamentaux de l'amorçage réseau (PXE)
+
+L'environnement PXE (Preboot eXecution Environment) permet à une machine physique ou virtuelle de démarrer en s'appuyant uniquement sur sa carte réseau, sans nécessiter de support de stockage local préalablement formaté. Ce mécanisme s'intègre nativement dans les puces réseaux (NIC) et les micrologiciels (BIOS/UEFI) des serveurs modernes.
+
+Le déploiement automatisé en environnement d'entreprise repose sur la combinaison de quatre protocoles standards : DHCP, TFTP, HTTP et DNS.
+
+### 1.1 La séquence d'amorçage réseau
+
+Le démarrage d'un serveur vierge suit une chaîne d'événements stricte :
+
+1. **Diffusion DHCP :** La carte réseau du serveur cible émet une requête DHCP Discover en mode diffusion (broadcast) sur le réseau local.
+
+2. **Offre DHCP et options PXE :** Le serveur DHCP répond en fournissant une adresse IP, la passerelle, les serveurs DNS, ainsi que deux options spécifiques :
+
+   * **Option 66 (`next-server`) :** L'adresse IP du serveur d'amorçage.
+
+   * **Option 67 (`bootfile-name`) :** Le chemin et le nom du fichier du chargeur de démarrage initial (ex: `grubx64.efi`).
+
+3. **Transfert TFTP :** Le serveur cible contacte l'adresse IP fournie (Option 66\) via le protocole TFTP (port UDP 69\) pour télécharger le chargeur de démarrage binaire (Option 67).
+
+4. **Chargement de la configuration GRUB :** Le chargeur de démarrage s'exécute en mémoire et récupère son fichier de configuration (`grub.cfg`) via TFTP. Ce fichier contient les chemins vers le noyau Linux, le disque RAM initial, et le fichier Kickstart.
+
+5. **Transfert HTTP :** Le chargeur télécharge le noyau (`vmlinuz`) et l'initramfs (`initrd.img`) via le protocole HTTP (port TCP 80). Le protocole HTTP est privilégié à cette étape car il est plus fiable et considérablement plus rapide que TFTP pour les fichiers volumineux.
+
+6. **Lancement d'Anaconda :** Le noyau démarre, télécharge le fichier Kickstart cible via HTTP, et lance l'installation de manière autonome.
+
+## 2\. Configuration des services d'infrastructure
+
+La mise en place de l'infrastructure PXE sous Linux requiert l'installation et la configuration de plusieurs services d'infrastructure, chacun ayant un rôle précis.
+
+### 2.1 Le serveur DHCP (isc-dhcp-server)
+
+Le serveur DHCP identifie les clients PXE et leur fournit les informations de redirection. L'exemple suivant illustre la configuration minimale requise dans `/etc/dhcp/dhcpd.conf` pour amorcer des systèmes UEFI :
+
+```
+authoritative;
+default-lease-time 600;
+max-lease-time 7200;
+
+subnet 192.168.4.0 netmask 255.255.255.0 {
+    range 192.168.4.150 192.168.4.199;
+    option routers 192.168.4.1;
+    option domain-name-servers 192.168.4.1;
+
+    # Configuration spécifique PXE
+    next-server 192.168.4.100;
+    
+    # Redirection vers le chargeur UEFI par défaut
+    filename "grubx64.efi";
+}
+```
+
+En environnement de travaux pratiques ou sur un réseau d'entreprise, il est impératif de restreindre l'écoute de ce service à une interface réseau spécifique afin de ne pas perturber les autres sous-réseaux.
+
+### 2.2 Le serveur TFTP (tftpd-hpa)
+
+Le protocole Trivial File Transfer Protocol est simple, sans authentification ni gestion de session. Le service s'appuie généralement sur le répertoire racine `/var/lib/tftpboot/` ou `/srv/tftp/`.
+
+Ce répertoire héberge l'exécutable d'amorçage UEFI signé par la distribution (`grubx64.efi`) ainsi que la configuration GRUB.
+
+### 2.3 Le serveur HTTP (Nginx)
+
+Le serveur web assure la distribution des fichiers lourds et de la configuration dynamique. Il héberge deux arborescences distinctes :
+
+* **Les sources du système d'exploitation :** L'intégralité du contenu de l'image ISO Linux extraite.  
+* **Les profils d'installation :** Le répertoire contenant les fichiers Kickstart `.ks`.
+
+Le serveur web doit autoriser le listage de ses répertoires (autoindex) afin que l'installateur puisse parcourir les fichiers.
+
+## 3\. Structure et paramétrage du chargeur GRUB2
+
+Le fichier de configuration TFTP `grub.cfg` orchestre le lancement du noyau Linux d'installation.
+
+Une entrée de menu standard pour une installation réseau se structure ainsi :
+
+```
+set default="0"
+set timeout=5
+
+menuentry 'Install Rocky Linux 9 (Automated)' {
+    linuxefi rocky9/vmlinuz inst.repo=http://192.168.4.100/os/rocky9/ inst.ks=http://192.168.4.100/ks/production-rocky9.ks console=tty0 console=ttyS0,115200n8
+    initrdefi rocky9/initrd.img
+}
+```
+
+Les arguments transmis remplissent des fonctions spécifiques :
+
+* `inst.repo=` : Indique à Anaconda l'adresse HTTP où trouver les paquets logiciels.  
+* `inst.ks=` : Spécifie l'emplacement exact du fichier de réponses Kickstart.  
+* `console=tty0 console=ttyS0,115200n8` : Configure la sortie standard pour s'afficher à la fois sur l'écran physique et sur le port série virtuel (KVM sur IP, iLO, iDRAC).
+
+## PARTIE 2 : MÉMO TECHNIQUE OPÉRATIONNEL
+
+Cette section regroupe les commandes et configurations requises pour le déploiement technique des services de l'infrastructure PXE.
+
+### 1\. Installation des paquets de base
+
+```sh
+# Installation des démons (DHCP, TFTP, Nginx) et du client TFTP pour les tests
+sudo apt update
+sudo apt install isc-dhcp-server tftpd-hpa nginx tftp
+```
+
+### 2\. Restriction de l'interface DHCP
+
+Pour éviter un conflit DHCP sur le réseau de production, modifiez le fichier `/etc/default/isc-dhcp-server` pour y spécifier l'interface dédiée (ex: `eth1` ou `ens34`) :
+
+```
+# Fichier : /etc/default/isc-dhcp-server
+INTERFACESv4="eth1"
+```
+
+### 3\. Activation du listage de répertoire (Autoindex) sous Nginx
+
+Pour qu'Anaconda puisse télécharger les fichiers Kickstart et naviguer dans l'arborescence, modifiez le fichier de site par défaut `/etc/nginx/sites-available/default` :
+
+```nginx
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+
+    root /var/www/html;
+    index index.html index.htm index.nginx-debian.html;
+
+    server_name _;
+
+    location / {
+        # Activation de l'indexation des dossiers
+        autoindex on;
+        try_files $uri $uri/ =404;
+    }
+}
+```
+
+&nbsp;
+
+### 4\. Commandes de validation et diagnostic (Tests Locaux)
+
+Avant de démarrer un client PXE, validez chaque maillon de la chaîne depuis le Master :
+
+**A. Valider le DHCP (Écoute des sockets UDP)**
+
+```sh
+# Vérifier l'écoute sur le port UDP 67
+sudo ss -ulnp | grep 67
+```
+
+**B. Valider le serveur TFTP**
+
+```sh
+# Se placer dans /tmp et simuler un client téléchargeant le chargeur de démarrage
+cd /tmp
+tftp 192.168.4.100 -c get grubx64.efi
+ls -l grubx64.efi
+```
+
+**C. Valider le serveur Web HTTP**
+
+```sh
+# Vérifier que le fichier Kickstart est distribué avec un code de retour 200
+curl -I http://192.168.4.100/ks/production-rocky9.ks
+```
+
+&nbsp;
