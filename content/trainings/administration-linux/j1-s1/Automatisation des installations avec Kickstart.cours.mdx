@@ -1,0 +1,304 @@
+# Automatisation des installations avec Kickstart
+
+<div className="callout callout-info">
+  <strong>Objectifs opérationnels :</strong>
+  <ul>
+    <li>Comprendre la séparation entre le provisionnement initial et la gestion de configuration continue.</li>
+    <li>Maîtriser le fonctionnement interne de l'installateur <strong>Anaconda</strong> sous Rocky Linux et RHEL.</li>
+    <li>Concevoir un fichier de réponses <strong>Kickstart (<code>ks.cfg</code>)</strong> reproductible et sécurisé.</li>
+    <li>Automatiser un schéma de partitionnement avancé avec <strong>LVM</strong>.</li>
+    <li>Exploiter les blocs de scripts dynamiques <code>%pre</code> et <code>%post</code> pour adapter l'installation au matériel cible.</li>
+  </ul>
+</div>
+
+&nbsp;
+
+---
+
+## 1\. Contexte : Le provisionnement initial
+
+Dans l'administration d'infrastructures de production, l'installation manuelle d'un serveur via une interface interactive présente trois inconvénients :
+
+1. **Le risque d'erreur humaine et d'écart de configuration :** Oubli d'une partition séparée pour `/var/log`, mauvais choix de fuseau horaire, table de partitionnement non conforme ou sélection accidentelle de paquets superflus augmentant la surface d'exposition.  
+2. **Le temps de déploiement :** Installer manuellement plusieurs dizaines de serveurs physiques ou virtuels mobilise un administrateur sur une longue durée.  
+3. **La reprise après sinistre :** En cas de perte matérielle, la reconstruction à l'identique d'un nœud doit être réalisable rapidement à partir d'un fichier de définition versionné.
+
+### Découpage du cycle de vie d'un serveur
+
+```
++-------------------------------------------------------------------------------+
+|                           Cycle de vie d'un serveur                           |
++--------------------------------------+----------------------------------------+
+|       Phase 0 : Provisionnement      |    Phase 1 & 2 : Configuration & MCO   |
+|      (Kickstart / Preseed / PXE)     |           (Ansible / Puppet)           |
++--------------------------------------+----------------------------------------+
+| - Détection du matériel (Bare / VM)  | - Déploiement des services (/etc)      |
+| - Table de partitionnement (GPT/LVM) | - Durcissement sécurité (ANSSI / CIS)  |
+| - Installation du noyau et base OS   | - Maintien en condition (Correctifs)   |
+| - Configuration réseau primaire      | - Orchestration et supervision (Nagios)|
+| - Injection du compte & clé SSH      |                                        |
+| -> Exécution unique à l'amorçage     | -> Exécution continue et idempotente   |
++--------------------------------------+----------------------------------------+
+```
+
+* **Kickstart** est la solution native de l'écosystème Red Hat (RHEL, Rocky Linux, AlmaLinux, Fedora) permettant d'automatiser intégralement l'installation initiale.  
+* **Preseed** (ainsi que *Cloud-Init / Autoinstall*) remplit ce rôle équivalent dans l'écosystème Debian et Ubuntu.
+
+---
+
+## 2\. Fonctionnement de l'installateur Anaconda
+
+Lorsqu'un serveur Rocky Linux démarre sur un support d'installation (ISO, clé USB ou réseau PXE), le système d'exploitation final n'est pas encore présent sur le disque. Le processus suit une séquence en mémoire vive :
+
+```
+[1. Chargeur d'amorçage (GRUB2 / Syslinux)]
+        │
+        ▼ Charge en mémoire RAM
+[2. Noyau Linux (vmlinuz) + Disque RAM initial (initrd.img)]
+        │
+        ▼ Monte le système racine éphémère en mémoire (rootfs)
+[3. Démarrage de systemd dans l'initramfs -> Lancement d'Anaconda]
+        │
+        ├─► Lecture du paramètre noyau : inst.ks=http://.../ks.cfg
+        ├─► Exécution des scripts %pre (en RAM, avant formatage)
+        ├─► Partitionnement (parted/LVM) & Formatage (XFS/ext4) sur /mnt/sysimage
+        ├─► Résolution des dépendances DNF/RPM et installation des paquets
+        └─► Exécution des scripts %post (chrootés dans /mnt/sysimage)
+        │
+        ▼
+[4. Écriture de GRUB2 sur le disque -> Redémarrage vers l'OS installé]
+```
+
+### Consoles virtuelles de diagnostic pendant l'installation
+
+Pendant que **Anaconda** s'exécute, il ouvre plusieurs consoles virtuelles accessibles via `Ctrl+Alt+F1` à `F5` (ou via `tmux` sur la console principale) :
+
+* **`tty1` (`tmux` fenêtre 1\) :** Écran principal de suivi d'installation.  
+* **`tty2` (`tmux` fenêtre 2\) :** **Shell interactif `root`** permettant d'inspecter les disques (`lsblk`), le réseau (`ip a`) ou de tester les commandes.  
+* **`tty3` (`tmux` fenêtre 3\) :** Journal d'installation général (`/tmp/anaconda.log`).  
+* **`tty4` (`tmux` fenêtre 4\) :** Journal relatif au stockage et au partitionnement (`/tmp/storage.log`).  
+* **`tty5` (`tmux` fenêtre 5\) :** Sortie standard des scripts `%pre` et `%post` (`/tmp/program.log`).
+
+> **Note :** Dès qu'un serveur Rocky Linux est installé (même manuellement), Anaconda génère automatiquement le fichier **`/root/anaconda-ks.cfg`**. Ce fichier contient les paramètres exacts retenus lors de l'installation et sert de modèle de départ pour concevoir de nouveaux profils.
+
+---
+
+## 3\. Structure d'un fichier Kickstart (`ks.cfg`)
+
+Un fichier Kickstart est un fichier texte structuré en **4 sections** :
+
+1. **Section Commandes :** Langue, clavier, réseau, mot de passe root, fuseau horaire, règles de partitionnement.  
+2. **Section `%packages` :** Liste des groupes d'environnement, des paquets à installer et des paquets à exclure.  
+3. **Section `%pre` (Optionnelle) :** Scripts exécutés **avant** le partitionnement.  
+4. **Section `%post` (Optionnelle) :** Scripts exécutés **après** l'installation des paquets sur le nouveau système de fichiers.
+
+---
+
+### A. Directives système et sécurité
+
+```ini
+# Mode d'exécution : 'text' (console texte) ou 'graphical'
+text
+
+# Action en fin d'installation : 'reboot', 'poweroff' ou 'halt'
+reboot --eject
+
+# Localisation et fuseau horaire (Horloge matérielle sur UTC)
+lang fr_FR.UTF-8
+keyboard --vckeymap=fr --xlayouts='fr'
+timezone Europe/Paris --utc
+
+# Source des paquets (Média local CD/DVD ou dépôt HTTP distant)
+cdrom
+# Alternative réseau : url --url="http://192.168.4.100/repo/rocky9/BaseOS/"
+
+# Sécurité : SELinux et Pare-feu local
+selinux --enforcing
+firewall --enabled --service=ssh
+
+# Configuration réseau (DHCP ou Statique)
+network --bootproto=dhcp --device=link --activate --onboot=yes --hostname=node-template.infra.lan
+# Exemple statique :
+# network --bootproto=static --ip=192.168.4.101 --netmask=255.255.255.0 --gateway=192.168.4.1 --nameserver=192.168.4.1 --device=link --activate
+
+# Compte root (Mot de passe chiffré en SHA-512)
+rootpw --iscrypted $6$rounds=4096$SalageSecurise$HashSHA512CompletGenereParOpenSSL...
+
+# Création du compte d'administration avec injection de clé publique SSH
+user --name=formation --groups=wheel --iscrypted --password=$6$...
+sshkey --username=formation "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... ansible-master@infra"
+```
+
+&nbsp;
+
+<div className="callout callout-warning">
+  <strong>Génération d'un condensat de mot de passe SHA-512 :</strong><br />
+  Évitez de stocker des mots de passe en clair (<code>--plaintext</code>) dans un fichier Kickstart. Vous pouvez générer le condensat avec OpenSSL :
+  <pre><code>openssl passwd -6 -salt "SelAleatoire" "VotreMotDePasse"</code></pre>
+</div>
+
+&nbsp;
+
+---
+
+### B. Automatisation du stockage et partitionnement LVM
+
+En production, l'utilisation de **LVM (*Logical Volume Manager*)** combinée au système de fichiers **XFS** (par défaut sous Rocky Linux 9\) permet de redimensionner les volumes à chaud et d'isoler les répertoires sensibles (`/var`, `/var/log`, `/tmp`) afin d'éviter qu'une saturation des journaux ne bloque le système racine `/`.
+
+```ini
+# 1. Réinitialisation de la table de partition et du secteur d'amorçage
+zerombr
+clearpart --all --initlabel --drives=sda
+
+# 2. Configuration du chargeur de démarrage GRUB2
+bootloader --location=mbr --boot-drive=sda --append="crashkernel=auto"
+
+# 3. Partition physique d'amorçage
+part /boot --fstype="xfs" --ondisk=sda --size=1024
+# Note : Sur un système UEFI, ajouter : part /boot/efi --fstype="efi" --ondisk=sda --size=512
+
+# 4. Création du Volume Physique (PV) LVM occupant l'espace restant (--grow)
+part pv.01 --fstype="lvmpv" --ondisk=sda --size=10240 --grow
+
+# 5. Création du Groupe de Volumes (VG) nommé 'vg_system' (Extent = 4 Mo)
+volgroup vg_system --pesize=4096 pv.01
+
+# 6. Découpage des Volumes Logiques (LV)
+logvol swap  --fstype="swap" --name=lv_swap --vgname=vg_system --size=2048
+logvol /     --fstype="xfs"  --name=lv_root --vgname=vg_system --size=8192
+logvol /var  --fstype="xfs"  --name=lv_var  --vgname=vg_system --size=4096
+logvol /tmp  --fstype="xfs"  --name=lv_tmp  --vgname=vg_system --size=1024 --fsoptions="nodev,nosuid,noexec"
+```
+
+&nbsp;
+
+---
+
+### C. Sélection des paquets (`%packages`)
+
+Il est recommandé d'installer un environnement minimal (`@^minimal-environment`). Les paquets applicatifs seront déployés ultérieurement par l'outil de gestion de configuration (Ansible), à l'exception des utilitaires de base nécessaires dès le premier démarrage.
+
+```ini
+%packages
+@^minimal-environment
+vim-enhanced
+curl
+bash-completion
+python3
+# Exclusion de firmwares inutiles sur des machines virtuelles (préfixe '-')
+-iwl*
+-aic94xx-firmware
+%end
+```
+
+&nbsp;
+
+---
+
+## 4\. Personnalisation dynamique : Les blocs `%pre` et `%post`
+
+Un fichier Kickstart statique peut poser problème lorsque le parc matériel est hétérogène :
+
+* Un serveur équipé d'un contrôleur SAS nomme son disque `/dev/sda`.  
+* Un serveur équipé d'un disque NVMe utilise `/dev/nvme0n1`.  
+* Une machine virtuelle KVM utilise `/dev/vda` (pilote VirtIO).
+
+Si l'option `--drives=sda` est figée dans le fichier Kickstart, l'installation échouera sur les machines KVM et NVMe.
+
+### A. Le script de pré-installation (`%pre`)
+
+Le bloc `%pre` s'exécute en mémoire vive **avant** qu'Anaconda n'analyse les directives de partitionnement. En combinant un script `%pre` et la directive **`%include`**, il est possible de générer la configuration de stockage selon le matériel détecté :
+
+```ini
+# Inclusion du fichier qui sera généré par le bloc %pre
+%include /tmp/part-include.cfg
+
+%pre --interpreter=/bin/bash --log=/tmp/ks-pre.log
+# 1. Détection du premier disque bloc disponible (hors loop et cdrom sr0)
+FIRST_DISK=$(lsblk -ndo NAME,TYPE | awk '$2=="disk" {print $1; exit}')
+
+# 2. Lecture de la mémoire RAM pour dimensionner le Swap
+MEM_MB=$(awk '/MemTotal/ {printf "%.0f", $2/1024}' /proc/meminfo)
+if [ "$MEM_MB" -le 4096 ]; then
+    SWAP_SIZE=2048
+else
+    SWAP_SIZE=4096
+fi
+
+# 3. Écriture des directives de partitionnement dans /tmp/part-include.cfg
+cat << EOF > /tmp/part-include.cfg
+zerombr
+clearpart --all --initlabel --drives=${FIRST_DISK}
+bootloader --location=mbr --boot-drive=${FIRST_DISK}
+part /boot --fstype="xfs" --ondisk=${FIRST_DISK} --size=1024
+part pv.01 --fstype="lvmpv" --ondisk=${FIRST_DISK} --size=8192 --grow
+volgroup vg_sys pv.01
+logvol swap --fstype="swap" --name=lv_swap --vgname=vg_sys --size=${SWAP_SIZE}
+logvol /    --fstype="xfs"  --name=lv_root --vgname=vg_sys --size=6144 --grow
+EOF
+%end
+```
+
+&nbsp;
+
+### B. Le script de post-installation (`%post`)
+
+Le bloc `%post` s'exécute **après** l'installation des paquets. Par défaut, il est exécuté dans un environnement **`chroot`** pointant sur `/mnt/sysimage` (directement à l'intérieur du système nouvellement installé).
+
+* Pour copier des fichiers depuis l'environnement temporaire d'Anaconda (`/tmp`) vers le nouveau système (`/mnt/sysimage/root/`), on ajoute l'option `--nochroot`.  
+* En mode standard (chrooté), on l'utilise pour finaliser la configuration locale (`sudoers`, bannières ou certificats) :
+
+```ini
+%post --interpreter=/bin/bash --log=/root/ks-post.log
+# 1. Configuration de sudo sans mot de passe pour le groupe wheel
+echo "%wheel ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/10-wheel-nopasswd
+chmod 0440 /etc/sudoers.d/10-wheel-nopasswd
+
+# 2. Mise en place d'une bannière de connexion
+cat << 'EOF' > /etc/issue.net
+***************************************************************************
+* Système réservé aux utilisateurs autorisés.                             *
+* Toutes les connexions et actions sont journalisées.                     *
+***************************************************************************
+EOF
+
+# 3. Enregistrement de la date d'installation
+echo "Installed via Kickstart on $(date -u +"%Y-%m-%dT%H:%M:%SZ")" > /etc/provisioned.info
+%end
+```
+
+&nbsp;
+
+---
+
+## 5\. Validation syntaxique avec `ksvalidator`
+
+Une erreur de syntaxe dans un fichier Kickstart (par exemple `--fstypes` au lieu de `--fstype`) interrompt l'installation et bloque la console dans l'attente d'une action manuelle.
+
+Sous Rocky Linux, le paquet **`pykickstart`** fournit l'utilitaire **`ksvalidator`**, qui vérifie la syntaxe du fichier en amont :
+
+```sh
+# Installation de l'outil de vérification
+sudo dnf install -y pykickstart
+
+# Vérification syntaxique pour RHEL / Rocky Linux 9
+ksvalidator -v RHEL9 /chemin/vers/ks.cfg
+```
+
+* Si la commande ne renvoie aucun message et que son code retour (`echo $?`) vaut **`0`**, la syntaxe du fichier est conforme.
+
+---
+
+## 6\. Synthèse des commandes et directives
+
+| Composant / Commande | Rôle |
+| :---- | :---- |
+| `/root/anaconda-ks.cfg` | Fichier Kickstart généré automatiquement après l'installation d'un système Rocky Linux. |
+| `ksvalidator -v RHEL9 ks.cfg` | Vérifie la syntaxe d'un fichier Kickstart avant utilisation (paquet `pykickstart`). |
+| `openssl passwd -6` | Génère un condensat de mot de passe SHA-512 pour la directive `rootpw --iscrypted`. |
+| `%include /tmp/file.cfg` | Inclut des directives générées dynamiquement par le bloc `%pre`. |
+| `%pre` | S'exécute en RAM (`initramfs`) **avant** le partitionnement. Utilisé pour la détection matérielle. |
+| `%post` | S'exécute en `chroot` dans `/mnt/sysimage` **après** l'installation des paquets. |
+| `inst.ks=http://...` | Paramètre de démarrage du noyau Linux indiquant à Anaconda l'emplacement du fichier Kickstart. |
+
+&nbsp;
