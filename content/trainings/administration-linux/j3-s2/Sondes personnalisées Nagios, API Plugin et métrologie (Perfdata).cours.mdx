@@ -1,0 +1,243 @@
+# Sondes personnalisées Nagios, API Plugin et métrologie (Perfdata)
+
+## 1\. Limites des sondes génériques et supervision métier
+
+Les plugins standards fournis avec les distributions Linux (`nagios-plugins-all` ou `monitoring-plugins`) couvrent les constantes fondamentales du système d'exploitation : disponibilité réseau (ICMP), ouverture de ports TCP, espace disque disponible, charge processeur globale et présence de processus en mémoire.
+
+En environnement de production, ces contrôles génériques ne suffisent pas toujours à détecter une **panne silencieuse applicative** (*Silent Failure*) :
+
+* Un démon web Nginx ou Apache peut apparaître actif dans la table des processus (`check_procs` renvoie `OK`) et répondre sur le port TCP 80 (`check_http` renvoie `200 OK`), tout en ne traitant plus aucune transaction réelle suite à un blocage d'un service amont ou d'un proxy inverse.
+
+* Une tâche planifiée de sauvegarde ou d'export métier peut échouer silencieusement sans impacter la charge CPU ni saturer le disque.
+
+On distingue alors deux niveaux de surveillance :
+
+1. **La supervision boîte noire (*Black-Box*) :** Interroge le service depuis l'extérieur comme le ferait un client (test de port, requête HTTP externe).
+
+2. **La supervision boîte blanche (*White-Box*) :** Inspecte l'état interne du composant directement sur le serveur (âge de la dernière ligne écrite dans un fichier de log, nombre de fichiers en attente dans un répertoire de spool, nombre d'erreurs HTTP 500 survenues sur les cinq dernières minutes).
+
+Pour couvrir ces besoins spécifiques sans modifier le moteur d'ordonnancement, Nagios propose une interface d'extension standardisée : l'**API Plugin**.
+
+## 2\. Spécification de l'API Plugin Nagios
+
+Une sonde Nagios est un exécutable autonome (script Bash, Python, Perl ou binaire compilé C/Go) exécuté par le moteur Nagios ou par l'agent distant NRPE. Le contrat de communication entre la sonde et Nagios repose exclusivement sur deux éléments : le **code de retour shell** et la **première ligne de sortie standard (`stdout`)**.
+
+### 2.1 Les 4 codes de sortie normalisés (`Exit Codes`)
+
+À la fin de son exécution, le script doit se terminer par l'instruction `exit <code_entier>`. L'ordonnanceur Nagios lit ce code (`$?`) pour déterminer l'état du service :
+
+| Code de sortie (`exit`) | État Nagios | Signification technique |
+| :---- | :---- | :---- |
+| **`0`** | **`OK`** | La métrique mesurée se situe dans la plage de fonctionnement nominal. |
+| **`1`** | **`WARNING`** | La métrique a dépassé le seuil d'avertissement préventif (`-w`). |
+| **`2`** | **`CRITICAL`** | La métrique a franchi le seuil critique (`-c`) ou la ressource est indisponible. |
+| **`3`** | **`UNKNOWN`** | La sonde ne peut pas statuer (argument invalide, fichier illisible, erreur interne). |
+
+Tout code de sortie en dehors de l'intervalle `[0..3]` (par exemple `126` pour un défaut de droit d'exécution ou `127` pour une commande introuvable) est signalé comme une anomalie d'exécution par Nagios.
+
+### 2.2 Formatage de la sortie standard (`stdout`) et des *Perfdata*
+
+La sonde doit afficher une ligne unique sur sa sortie standard, divisée en deux parties séparées par le caractère tube (`|`) :
+
+$$\text{STATUT: Message lisible par l'operateur} \quad \vert \quad \text{'label'}=\text{valeur}[\text{UOM}];[\text{warn}];[\text{crit}];[\text{min}];[\text{max}]$$
+
+```
+OK: Derniere requete Nginx il y a 8s | 'inactivity_sec'=8s;300;900;0;
+
+```
+
+1. **Partie gauche (avant le `|`) :** Texte de diagnostic affiché dans l'interface web Nagios et transmis dans les messages d'alerte.
+
+2. **Partie droite (après le `|`, appelée *Performance Data* ou *Perfdata*) :** Chaîne structurée destinée aux outils de métrologie et de génération de graphiques (PNP4Nagios, Graphite, InfluxDB, Grafana).
+
+Chaque métrique *Perfdata* respecte la grammaire suivante :
+
+* **`'label'` :** Nom court de la métrique (entouré d'apostrophes simples s'il contient des espaces ou des caractères spéciaux).
+
+* **`valeur` :** Valeur numérique mesurée (ex: `8`, `45.2`).
+
+* **`UOM` (*Unit of Measure*) :** Unité de mesure normalisée accolée à la valeur sans espace :
+
+  * `s`, `ms`, `us` : temps (secondes, millisecondes, microsecondes).  
+  * `%` : pourcentage.  
+  * `B`, `KB`, `MB`, `GB`, `TB` : volume de données en octets.  
+  * `c` : compteur continu croissant (*counter*, ex: total de requêtes).  
+  * *(aucune unité)* : valeur scalaire brute (nombre de processus, d'erreurs ou d'utilisateurs).  
+* **`warn` et `crit` :** Rappel des seuils d'alerte utilisés (permet aux outils graphiques de tracer les lignes horizontales jaune et rouge sur les courbes).
+
+* **`min` et `max` :** Bornes minimale et maximale de la métrique (ex: `0` et `100` pour un pourcentage).
+
+Si une sonde exporte plusieurs métriques simultanément, les blocs de *perfdata* sont simplement séparés par une espace après le tube :
+
+```
+OK: Trafic normal | 'inactivity_sec'=8s;300;900;0; 'errors_500'=0;10;50;0;
+
+```
+
+## 3\. Règles d'ingénierie et sécurité d'exécution des sondes
+
+### 3.1 Contexte d'exécution et droits d'accès (Utilisateur `nrpe` / `nagios`)
+
+L'erreur la plus courante lors du développement d'une sonde personnalisée consiste à la tester uniquement avec le compte `root`. Or, en production, le démon NRPE s'exécute sous un compte système non privilégié :
+
+* Utilisateur **`nrpe`** sous Rocky Linux / RHEL.
+
+* Utilisateur **`nagios`** sous Debian / Ubuntu.
+
+Si la sonde doit analyser un fichier journal applicatif tel que `/var/log/nginx/access.log`, ce compte non privilégié doit disposer des droits de traversée (`x`) sur le dossier `/var/log/nginx` et du droit de lecture (`r`) sur le fichier `access.log` (via des permissions `0644`, l'appartenance au groupe propriétaire du log ou une ACL POSIX).
+
+### 3.2 Bonnes pratiques de développement de sondes
+
+1. **Définir explicitement la variable `PATH` :** L'environnement du démon NRPE est minimaliste. Déclarez toujours en début de script : `export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"`
+
+2. **Valider les arguments et les permissions avant la mesure :** Utilisez `getopts` pour analyser les options (`-w`, `-c`, `-f`). Si un paramètre est absent, si $w\geq c$, ou si le fichier cible n'est pas lisible (`[ ! -r "$FILE" ]`), affichez un message explicite commençant par `UNKNOWN:` et quittez immédiatement avec `exit 3`.
+
+3. **Limiter les créations de sous-processus (*Fork Overhead*) :** Chaque commande externe appelée dans un pipeline (`cat | grep | awk | wc`) crée un sous-processus noyau. À grande échelle, privilégiez les opérations arithmétiques natives du shell (`$(( ... ))`) et limitez le nombre de tubes.
+
+4. **Strict respect de la lecture seule :** Une sonde de supervision ne doit jamais modifier, tronquer ou supprimer les fichiers qu'elle inspecte, ni redémarrer un service d'elle-même.
+
+## 4\. Mémo technique opérationnel
+
+Cette section fournit le modèle de référence d'une sonde Bash conforme à l'API Nagios ainsi que les commandes de déploiement et de test sous Rocky Linux 9 et Debian 12\.
+
+### 4.1 Structure de référence d'une sonde Bash (`check_nginx_activity.sh`)
+
+Ce script mesure l'écart temporel (en secondes) entre l'heure actuelle du serveur et l'horodatage de la dernière requête enregistrée dans `/var/log/nginx/access.log` :
+
+```
+#!/bin/bash
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# 1. Codes de sortie normalises Nagios
+STATE_OK=0
+STATE_WARNING=1
+STATE_CRITICAL=2
+STATE_UNKNOWN=3
+
+# 2. Parametres par defaut
+LOG_FILE="/var/log/nginx/access.log"
+WARN=300
+CRIT=900
+
+# 3. Lecture des options en ligne de commande (-f fichier, -w warning, -c critical)
+while getopts "f:w:c:h" opt; do
+    case "$opt" in
+        f) LOG_FILE="$OPTARG" ;;
+        w) WARN="$OPTARG" ;;
+        c) CRIT="$OPTARG" ;;
+        h|*)
+            echo "UNKNOWN: Usage: $0 [-f /chemin/access.log] [-w warn_sec] [-c crit_sec]"
+            exit $STATE_UNKNOWN
+            ;;
+    esac
+done
+
+# 4. Controle de validite des seuils numériques
+if ! [[ "$WARN" =~ ^[0-9]+$ ]] || ! [[ "$CRIT" =~ ^[0-9]+$ ]] || [ "$WARN" -ge "$CRIT" ]; then
+    echo "UNKNOWN: Les seuils doivent etre des entiers positifs avec warning < critical."
+    exit $STATE_UNKNOWN
+fi
+
+# 5. Controle d'existence et de droit de lecture du fichier cible
+if [ ! -f "$LOG_FILE" ]; then
+    echo "UNKNOWN: Fichier '$LOG_FILE' introuvable."
+    exit $STATE_UNKNOWN
+fi
+
+if [ ! -r "$LOG_FILE" ]; then
+    echo "UNKNOWN: Lecture refusee sur '$LOG_FILE' (verifier les permissions pour l'agent NRPE)."
+    exit $STATE_UNKNOWN
+fi
+
+# 6. Extraction de la derniere ligne du journal
+LAST_LINE=$(tail -n 1 "$LOG_FILE" 2>/dev/null)
+if [ -z "$LAST_LINE" ]; then
+    echo "UNKNOWN: Journal '$LOG_FILE' vide, aucune requete enregistree."
+    exit $STATE_UNKNOWN
+fi
+
+# 7. Extraction et conversion de la date Nginx : [12/Nov/2026:14:25:10 +0100]
+RAW_DATE=$(echo "$LAST_LINE" | awk -F'[' '{print $2}' | awk -F']' '{print $1}' | awk '{print $1}')
+FORMATTED_DATE=$(echo "$RAW_DATE" | sed 's/\// /g' | sed 's/:/ /')
+
+TIMESTAMP_LOG=$(date -d "$FORMATTED_DATE" +%s 2>/dev/null)
+TIMESTAMP_NOW=$(date +%s)
+
+if [ -z "$TIMESTAMP_LOG" ]; then
+    echo "UNKNOWN: Format d'horodatage non reconnu ($RAW_DATE)."
+    exit $STATE_UNKNOWN
+fi
+
+# 8. Calcul de l'inactivite en secondes et construction des Perfdata
+DELTA_SEC=$(( TIMESTAMP_NOW - TIMESTAMP_LOG ))
+[ "$DELTA_SEC" -lt 0 ] && DELTA_SEC=0
+
+PERFDATA="| 'inactivity_sec'=${DELTA_SEC}s;${WARN};${CRIT};0;"
+
+# 9. Evaluation des seuils et sortie avec le code retour approprie
+if [ "$DELTA_SEC" -ge "$CRIT" ]; then
+    echo "CRITICAL: Aucune requete HTTP depuis ${DELTA_SEC}s (seuil >= ${CRIT}s) ${PERFDATA}"
+    exit $STATE_CRITICAL
+elif [ "$DELTA_SEC" -ge "$WARN" ]; then
+    echo "WARNING: Activite ralentie, derniere requete il y a ${DELTA_SEC}s (seuil >= ${WARN}s) ${PERFDATA}"
+    exit $STATE_WARNING
+else
+    echo "OK: Activite HTTP nominale, derniere requete il y a ${DELTA_SEC}s ${PERFDATA}"
+    exit $STATE_OK
+fi
+
+```
+
+### 4.2 Qualification unitaire sous l'identité de l'agent NRPE
+
+Sur un nœud cible, avant même d'appeler la sonde depuis le Master, testez son comportement en prenant l'identité exacte du démon NRPE (`nrpe` sous Rocky Linux, `nagios` sous Debian) :
+
+```
+# Detection du compte de service NRPE actif sur le noeud
+NRPE_USER=$(grep -E "^nrpe_user=" /etc/nagios/nrpe.cfg | cut -d= -f2)
+
+# 1. Test d'execution nominale sous l'identite de l'agent
+sudo -u "$NRPE_USER" /usr/lib64/nagios/plugins/check_nginx_activity.sh -f /var/log/nginx/access.log -w 300 -c 900
+echo "Code retour : $?"
+
+# 2. Test du cas d'erreur (arguments incoherents : warning > critical) -> doit renvoyer 3 (UNKNOWN)
+sudo -u "$NRPE_USER" /usr/lib64/nagios/plugins/check_nginx_activity.sh -w 900 -c 300
+echo "Code retour : $?"
+
+```
+
+### 4.3 Intégration dans NRPE et dans le serveur Nagios Core
+
+1. **Déclaration sur les nœuds managés (`/etc/nagios/nrpe.d/mco_activity.cfg`) :**
+
+```
+command[check_nginx_activity]=/usr/lib64/nagios/plugins/check_nginx_activity.sh -f /var/log/nginx/access.log -w 300 -c 900
+
+```
+
+*(Sous Debian, utilisez `/usr/lib/nagios/plugins/check_nginx_activity.sh` ou créez un lien symbolique).*
+
+2. **Déclaration du service sur le Master (`conf.d/services_mco.cfg`) :**
+
+```
+define service {
+    use                     generic-service
+    hostgroup_name          production-servers
+    service_description     Activite Trafic Nginx
+    check_command           check_nrpe!check_nginx_activity
+    max_check_attempts      3
+    check_interval          1
+    retry_interval          1
+}
+
+```
+
+## Synthèse : Structure du contrat d'interface Plugin Nagios
+
+| Composant du plugin | Syntaxe / Valeur attendue | Rôle dans la chaîne de supervision |
+| :---- | :---- | :---- |
+| **Code retour `0` / `1` / `2` / `3`** | `exit 0` (`OK`), `1` (`WARNING`), `2` (`CRITICAL`), `3` (`UNKNOWN`) | Détermine l'état du service et déclenche les notifications. |
+| **Message texte (avant `|`)** | `ETAT: Description concise du controle` | Affiché dans la console web et envoyé aux équipes d'astreinte. |
+| **Perfdata (après `|`)** | `'nom'=valeur[UOM];warn;crit;min;max` | Exploité par les moteurs graphiques pour tracer l'évolution temporelle. |
+
+&nbsp;

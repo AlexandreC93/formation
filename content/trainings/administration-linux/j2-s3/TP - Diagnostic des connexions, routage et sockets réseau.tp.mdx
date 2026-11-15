@@ -1,0 +1,165 @@
+# TP : Diagnostic des connexions, routage et sockets réseau
+
+## 1\. Objectifs
+
+Les équipes applicatives signalent des dysfonctionnements réseau sur les deux nœuds de production alors que les services systèmes semblent actifs :
+
+* **Incident 1 (`node1` \- `192.168.4.101`) :** Les requêtes HTTP émises depuis le Master vers `http://192.168.4.101:80` échouent immédiatement avec le message `Connection refused`. Pourtant, l'unité `nginx.service` apparaît bien à l'état `active (running)`.
+
+* **Incident 2 (`node2` \- `192.168.4.102`) :** Le service web interne censé écouter sur le port `8080` ne répond pas aux clients distants, et le serveur présente des erreurs de routage lorsqu'il tente de joindre le sous-réseau d'administration `10.99.0.0/24`.
+
+Vous devez diagnostiquer l'état des interfaces, des tables de voisinage ARP, des tables de routage et des sockets TCP/UDP à l'aide de la suite `iproute2` (`ip`, `ss`) et de `lsof`, puis corriger les anomalies à chaud depuis le **Master** (`192.168.4.100`).
+
+## 2\. Préparation de l'environnement et injection des pannes
+
+1. Créez le répertoire de travail `~/diagnostic-j2s3/` sur le Master et copiez-y vos fichiers `ansible.cfg` et `inventory.ini` :
+
+```
+mkdir -p ~/diagnostic-j2s3
+cd ~/diagnostic-j2s3
+cp ~/tp-ansible/ansible.cfg ~/tp-ansible/inventory.ini .
+
+```
+
+2. Créez et exécutez le script suivant depuis le Master pour injecter les anomalies de sockets et de routage sur `node1` et `node2` :
+
+```
+cat << 'EOF' > ~/diagnostic-j2s3/inject_j2s3.sh
+#!/bin/bash
+set -e
+
+# 1. Anomalie sur node1 : restriction de l'ecoute Nginx a l'interface loopback (127.0.0.1)
+ansible node1 -b -m ansible.builtin.shell -a '
+  for conf in /etc/nginx/nginx.conf /etc/nginx/conf.d/*.conf /etc/nginx/sites-available/*; do
+    if [ -f "$conf" ]; then
+      sed -i -E "s/^\s*listen\s+\[::\]:80.*/# listen ipv6 disabled;/g" "$conf"
+      sed -i -E "s/listen\s+([0-9.]+:)?80(\s+default_server)?;/listen 127.0.0.1:80 default_server;/g" "$conf"
+    fi
+  done
+  systemctl restart nginx
+'
+
+# 2. Anomalies sur node2 : service sur un mauvais port + route statique vers une passerelle inexistante
+ansible node2 -b -m ansible.builtin.shell -a '
+  pkill -f "python3 -m http.server" 2>/dev/null || true
+  nohup python3 -m http.server 8089 --bind 127.0.0.1 >/dev/null 2>&1 &
+
+  DEV=$(ip -4 route show default | awk "{print \$5; exit}")
+  [ -z "$DEV" ] && DEV=$(ip -o -4 addr show scope global | awk "{print \$2; exit}")
+  ip route replace 10.99.0.0/24 via 192.168.4.253 dev "$DEV" 2>/dev/null || true
+'
+
+echo "Anomalies de sockets et de routage injectees sur node1 et node2."
+EOF
+
+chmod +x ~/diagnostic-j2s3/inject_j2s3.sh
+~/diagnostic-j2s3/inject_j2s3.sh
+
+```
+
+## 3\. Cahier des charges
+
+### 3.1 Audit des interfaces et du voisinage (Couches 1 à 3\)
+
+Depuis le Master, à l'aide de commandes Ad-Hoc Ansible :
+
+1. **État des liaisons et statistiques :**
+
+   * Exécutez `ip -s link show` sur `node1` et `node2`.
+
+   * Vérifiez la présence des drapeaux `UP` et `LOWER_UP` sur l'interface réseau principale et contrôlez que les compteurs `errors` et `dropped` sont à zéro.
+
+2. **Table de voisinage ARP :**
+
+   * Inspectez le cache ARP des deux serveurs avec `ip neigh show`.
+
+   * Vérifiez l'état de joignabilité (`REACHABLE` ou `STALE`) de l'adresse IP du Master (`192.168.4.100`).
+
+3. **Qualification du symptôme de connexion depuis le Master :**
+
+   * Testez l'ouverture du port 80 sur `node1` avec `nc -zv -w 2 192.168.4.101 80` et avec `curl -Iv http://192.168.4.101`.
+
+   * Relevez le message exact retourné et déduisez quel type de paquet TCP (`RST` ou absence de réponse) a été renvoyé par `node1`.
+
+### 3.2 Diagnostic et correction des sockets sur `node1`
+
+Sur `node1`, le service `nginx` est démarré mais refuse les connexions provenant du Master :
+
+1. **Inspection des sockets en écoute :**
+
+   * Exécutez `ss -tlpn 'sport = :80'` sur `node1`.
+
+   * Observez la colonne `Local Address:Port` et expliquez pourquoi un test local sur `node1` (`curl -I http://127.0.0.1`) fonctionne alors qu'un test depuis le Master (`curl -I http://192.168.4.101`) échoue.
+
+2. **Identification par descripteurs de fichiers :**
+
+   * Confirmez l'identité du binaire et des sockets associées à l'utilisateur `nginx` (ou `www-data`) avec la commande `lsof -nP -iTCP:80 -sTCP:LISTEN`.  
+3. **Remédiation :**
+
+   * Recherchez la directive `listen 127.0.0.1:80` dans `/etc/nginx/` à l'aide de `grep -rn "127.0.0.1:80" /etc/nginx/`.
+
+   * Modifiez la configuration pour que Nginx écoute sur toutes les interfaces IPv4 (`listen 80 default_server;` ou `0.0.0.0:80`).
+
+   * Validez la syntaxe avec `nginx -t`, rechargez le service `nginx` et vérifiez avec `ss -tlpn 'sport = :80'` que la socket affiche désormais `0.0.0.0:80` (ou `*:80`).
+
+### 3.3 Diagnostic des ports et de la table de routage sur `node2`
+
+Sur `node2`, deux problèmes distincts doivent être corrigés :
+
+1. **Localisation du processus applicatif Python :**
+
+   * L'application interne devait écouter sur `0.0.0.0:8080`, mais le port `8080` ne répond pas.
+
+   * Listez l'ensemble des ports TCP en écoute sur `node2` avec `ss -tlpn` (ou `lsof -nP -iTCP -sTCP:LISTEN`) pour retrouver sur quel port et quelle adresse locale le processus `python3` a été démarré par erreur.
+
+   * Arrêtez ce processus `python3` mal configuré et relancez-le proprement sur le port `8080` lié à toutes les interfaces (`0.0.0.0`).
+
+   * Si le pare-feu local est actif sur `node2`, assurez-vous que le port `8080/tcp` est autorisé.
+
+2. **Analyse et nettoyage du routage :**
+
+   * Affichez la table de routage de `node2` avec `ip route show`.
+
+   * Interrogez le noyau de `node2` avec `ip route get 10.99.0.10` pour identifier quelle passerelle (`via ...`) il tente d'utiliser.
+
+   * Testez la joignabilité de cette passerelle et vérifiez son statut dans `ip neigh show`.
+
+   * Supprimez la route statique invalide vers `10.99.0.0/24` à l'aide de la commande `ip route del 10.99.0.0/24`, puis vérifiez que `ip route get 10.99.0.10` emprunte désormais la passerelle par défaut normale du serveur.
+
+### 3.4 Synthèse de diagnostic
+
+Créez le fichier `~/diagnostic-j2s3/rapport-sockets.md` contenant :
+
+* La sortie de la commande `ss -tlpn` avant et après correction sur `node1`.
+
+* L'explication de la différence entre une écoute sur `127.0.0.1:80` et `0.0.0.0:80`.
+
+* La commande exacte permettant de demander au noyau Linux quelle route sera choisie pour joindre une adresse IP cible.
+
+## 4\. Critères de validation
+
+Exécutez les commandes suivantes depuis le Master pour valider le rétablissement des deux serveurs :
+
+```
+# 1. Verification de l'ecoute globale sur le port 80 de node1
+ansible node1 -b -a "ss -tlpn 'sport = :80'"
+curl -I http://192.168.4.101
+
+# 2. Verification de l'ecoute globale sur le port 8080 de node2
+ansible node2 -b -a "ss -tlpn 'sport = :8080'"
+curl -I http://192.168.4.102:8080
+
+# 3. Verification de l'absence de la route statique erronée sur node2
+ansible node2 -a "ip route show"
+
+```
+
+## Synthèse des livrables attendus
+
+| Élément contrôlé | Résultat attendu |
+| :---- | :---- |
+| Socket Nginx (`node1`) | Écoute sur `0.0.0.0:80` dans `ss -tlpn` et réponse `HTTP/1.1 200 OK` depuis le Master. |
+| Service Python (`node2`) | Écoute sur `0.0.0.0:8080` dans `ss -tlpn` et réponse `HTTP 200 OK` sur le port `8080`. |
+| Table de routage (`node2`) | Route `10.99.0.0/24 via 192.168.4.253` supprimée de la table de routage. |
+
+&nbsp;

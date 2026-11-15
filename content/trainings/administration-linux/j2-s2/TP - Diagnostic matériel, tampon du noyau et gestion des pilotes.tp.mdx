@@ -1,0 +1,176 @@
+# TP : Diagnostic matériel, tampon du noyau et gestion des pilotes
+
+## 1\. Objectifs
+
+L'équipe d'exploitation signale deux incidents liés au noyau et à la gestion des périphériques de stockage sur les serveurs de production :
+
+* **Incident 1 (`node1` \- `192.168.4.101`) :** Un volume de sauvegarde formaté en `vfat` (`/var/lib/mco_backup.img`) ne peut plus être monté sur `/mnt/backup`. De plus, un service applicatif critique s'est brutalement arrêté au cours de la nuit sans laisser de trace d'erreur dans ses propres journaux applicatifs.
+
+* **Incident 2 (`node2` \- `192.168.4.102`) :** Un périphérique bloc de stockage virtuel (`/dev/loop5`) réservé à un moteur de base de données local subit une corruption de ses permissions et de son lien symbolique `/dev/mco_storage` à chaque événement matériel déclenché par `udev`.
+
+Vous devez diagnostiquer ces deux serveurs depuis le nœud **Master** (`192.168.4.100`), analyser le tampon circulaire du noyau (`dmesg`), corriger le chargement des modules noyau (`modprobe`) et rectifier les règles `udev` sans redémarrer les machines.
+
+## 2\. Préparation de l'environnement et injection des pannes
+
+1. Créez le répertoire de travail `~/diagnostic-j2s2/` sur le Master et copiez-y votre configuration Ansible :
+
+```
+mkdir -p ~/diagnostic-j2s2
+cd ~/diagnostic-j2s2
+cp ~/tp-ansible/ansible.cfg ~/tp-ansible/inventory.ini .
+
+```
+
+2. Créez et exécutez le script suivant depuis le Master pour mettre en place les anomalies matérielles et noyau sur `node1` et `node2` :
+
+```
+cat << 'EOF' > ~/diagnostic-j2s2/inject_j2s2.sh
+#!/bin/bash
+set -e
+
+# 1. Preparation et injection sur node1 : blocage du module vfat et trace OOM Killer dans kmsg
+ansible node1 -b -m ansible.builtin.shell -a "
+  mkdir -p /mnt/backup
+  umount /mnt/backup 2>/dev/null || true
+  dd if=/dev/zero of=/var/lib/mco_backup.img bs=1M count=32 status=none
+  mkfs.vfat /var/lib/mco_backup.img >/dev/null 2>&1 || mkfs.fat /var/lib/mco_backup.img >/dev/null 2>&1 || true
+  modprobe -r vfat fat 2>/dev/null || true
+
+  cat << 'MOD' > /etc/modprobe.d/99-mco-hardening.conf
+blacklist vfat
+install vfat /bin/false
+MOD
+
+  echo '<3>Out of memory: Killed process 8492 (java-analytics) total-vm:4194304kB, anon-rss:3812044kB, file-rss:0kB' > /dev/kmsg
+  echo '<4>blk_update_request: I/O error, dev sdz, sector 1048576 op 0x0:(READ) flags 0x80700' > /dev/kmsg
+"
+
+# 2. Preparation et injection sur node2 : peripherique loop5 et regle udev erronee
+ansible node2 -b -m ansible.builtin.shell -a "
+  modprobe loop max_loop=8 2>/dev/null || true
+  losetup -d /dev/loop5 2>/dev/null || true
+  dd if=/dev/zero of=/var/lib/mco_raw_disk.img bs=1M count=32 status=none
+  losetup /dev/loop5 /var/lib/mco_raw_disk.img
+
+  cat << 'UDEV' > /etc/udev/rules.d/99-mco-storage.rules
+SUBSYSTEM==\"block\", KERNEL==\"loop5\", SYMLINK+=\"mco_wrong_disk\", MODE=\"0000\", OWNER=\"nobody\", GROUP=\"nobody\"
+UDEV
+
+  udevadm control --reload-rules
+  udevadm trigger --subsystem-match=block --sysname-match=loop5
+"
+
+echo "Anomalies materiel et noyau injectees sur node1 et node2."
+EOF
+
+chmod +x ~/diagnostic-j2s2/inject_j2s2.sh
+~/diagnostic-j2s2/inject_j2s2.sh
+
+```
+
+## 3\. Cahier des charges
+
+### 3.1 Inventaire matériel et inspection du tampon noyau (`node1`)
+
+À l'aide de commandes Ad-Hoc Ansible depuis le Master :
+
+1. **Inventaire des bus et pilotes :**
+
+   * Exécutez `lspci -nnk` sur `node1` pour identifier le pilote noyau (*Kernel driver in use*) associé à la carte réseau et au contrôleur de stockage.
+
+   * Affichez l'arborescence des périphériques blocs et systèmes de fichiers avec `lsblk -f`.
+
+2. **Analyse du tampon circulaire (`dmesg`) :**
+
+   * Interrogez les messages d'erreur et d'alerte du noyau sur `node1` à l'aide de `dmesg -T --level=err,warn` (ou `journalctl -k -b`).
+
+   * Relevez le nom exact et le PID du processus applicatif qui a été arrêté par le mécanisme *Out-Of-Memory Killer* (OOM), ainsi que la quantité de mémoire résidente (`anon-rss`) qu'il consommait.
+
+   * Relevez le nom du disque et le numéro de secteur concernés par l'erreur d'entrée/sortie (`I/O error`).
+
+### 3.2 Dépannage des modules noyau sur `node1`
+
+L'équipe souhaite monter l'image de sauvegarde `/var/lib/mco_backup.img` sur le point de montage `/mnt/backup` :
+
+1. **Constat de la panne :**
+
+   * Tentez de monter l'image sur `node1` via la commande `mount -o loop /var/lib/mco_backup.img /mnt/backup`.
+
+   * Tentez de charger manuellement le module `vfat` avec `modprobe -v vfat` et relevez le message retourné.
+
+2. **Analyse de la configuration des modules :**
+
+   * Vérifiez avec `lsmod` si le module `vfat` est présent en mémoire.
+
+   * Inspectez les fichiers présents dans `/etc/modprobe.d/` pour localiser la directive qui redirige le chargement de `vfat` vers `/bin/false`.
+
+3. **Remédiation et paramétrage :**
+
+   * Supprimez le fichier de blocage anormal dans `/etc/modprobe.d/`.
+
+   * Configurez le chargement automatique et persistant du module `vfat` au démarrage en créant le fichier `/etc/modules-load.d/vfat.conf`.
+
+   * Chargez immédiatement le module avec `modprobe vfat`, vérifiez sa présence avec `lsmod | grep vfat`, puis montez `/var/lib/mco_backup.img` sur `/mnt/backup`.
+
+### 3.3 Diagnostic et correction des règles `udev` sur `node2`
+
+Sur `node2`, le moteur de stockage attend un lien symbolique `/dev/mco_storage` pointant vers `/dev/loop5` avec les permissions `0660` et le groupe `disk` :
+
+1. **Inspection du périphérique :**
+
+   * Vérifiez les permissions actuelles de `/dev/loop5` et les liens symboliques présents dans `/dev/` (`ls -l /dev/loop5 /dev/mco*`).
+
+   * Interrogez les attributs `udev` du périphérique `/dev/loop5` à l'aide de la commande : `udevadm info --query=all --name=/dev/loop5`
+
+2. **Analyse et correction de la règle `udev` :**
+
+   * Inspectez le contenu du fichier `/etc/udev/rules.d/99-mco-storage.rules`.
+
+   * Corrigez cette règle pour que le périphérique `KERNEL=="loop5"` appartenant au `SUBSYSTEM=="block"` crée le lien symbolique `SYMLINK+="mco_storage"`, applique le mode `MODE="0660"`, l'utilisateur `OWNER="root"` et le groupe `GROUP="disk"`.
+
+   * Supprimez l'ancien lien symbolique erroné `/dev/mco_wrong_disk` s'il subsiste.
+
+3. **Application à chaud sans redémarrage :**
+
+   * Rechargez la configuration du démon `udevd` avec `udevadm control --reload-rules`.
+
+   * Déclenchez un événement matériel ciblé sur `loop5` avec `udevadm trigger --subsystem-match=block --sysname-match=loop5` suivi de `udevadm settle`.
+
+   * Vérifiez que `/dev/mco_storage` pointe bien vers `loop5` et que `/dev/loop5` possède les permissions `brw-rw----` (`0660`) avec le propriétaire `root:disk`.
+
+### 3.4 Compte-rendu d'investigation
+
+Rédigez un fichier synthétique `~/diagnostic-j2s2/rapport-materiel.md` contenant :
+
+* Le nom et le PID du processus éliminé par l'OOM Killer sur `node1`.
+
+* L'explication technique de la différence entre les directives `blacklist` et `install /bin/false` dans `/etc/modprobe.d/`.
+
+* La commande `udevadm` permettant d'appliquer une règle personnalisée à chaud sans redémarrer le serveur.
+
+## 4\. Critères de validation
+
+Exécutez les contrôles suivants depuis le Master pour valider le bon fonctionnement des deux nœuds :
+
+```
+# 1. Verification du chargement du module vfat et du montage sur node1
+ansible node1 -a "lsmod | grep vfat"
+ansible node1 -a "df -T /mnt/backup"
+
+# 2. Verification de la persistance du module au demarrage sur node1
+ansible node1 -a "cat /etc/modules-load.d/vfat.conf"
+
+# 3. Verification du lien symbolique et des permissions udev sur node2
+ansible node2 -a "ls -l /dev/mco_storage /dev/loop5"
+
+```
+
+## Synthèse des livrables attendus
+
+| Élément contrôlé | Résultat attendu |
+| :---- | :---- |
+| Module `vfat` (`node1`) | Module chargé dans `lsmod`, persisté dans `/etc/modules-load.d/vfat.conf` et `/mnt/backup` monté. |
+| Périphérique `/dev/loop5` (`node2`) | Permissions `0660` (`brw-rw----`), propriétaire `root:disk` et lien `/dev/mco_storage` actif. |
+| Rapport d'investigation | Fichier `~/diagnostic-j2s2/rapport-materiel.md` complété avec l'analyse `dmesg`. |
+
+&nbsp;

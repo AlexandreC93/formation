@@ -1,0 +1,192 @@
+# TP : Analyse de la charge système en temps réel (CPU, RAM, I/O)
+
+## 1\. Contexte et objectifs de l'atelier
+
+La supervision Nagios Core vient de remonter une dégradation des temps de réponse et une élévation anormale du *Load Average* sur les deux serveurs de production :
+
+* **Incident 1 (`node1` \- `192.168.4.101`) :** Le *Load Average* dépasse le nombre de cœurs processeur disponibles et les requêtes HTTP subissent une latence importante.
+
+* **Incident 2 (`node2` \- `192.168.4.102`) :** Le *Load Average* est également élevé, mais l'utilisation processeur applicative (`%us`) semble paradoxalement faible tandis que les opérations sur le système de fichiers sont très lentes.
+
+Vous devez déployer les outils de métrologie temps réel (`sysstat`, `iotop`, `nmon`), qualifier la nature exacte de la saturation sur chaque nœud avec `vmstat` et `iostat`, identifier les processus responsables avec `ps`, `pidstat` et `iotop`, puis neutraliser ou brider (`renice` / `ionice`) les traitements en cause depuis le **Master** (`192.168.4.100`).
+
+## 2\. Préparation de l'environnement et injection des charges
+
+### 2.1 Installation des outils d'analyse sur le parc
+
+1. Créez le répertoire de travail `~/diagnostic-j3s3/` sur le Master et copiez-y votre configuration Ansible :
+
+```
+mkdir -p ~/diagnostic-j3s3
+cd ~/diagnostic-j3s3
+cp ~/tp-ansible/ansible.cfg ~/tp-ansible/inventory.ini .
+
+```
+
+2. Déployez les paquets d'analyse de performance (`sysstat`, `iotop`, `nmon`, `psmisc`) sur `node1` et `node2` à l'aide d'une commande Ansible :
+
+```
+ansible production_nodes -b -m ansible.builtin.shell -a "
+  if command -v dnf >/dev/null 2>&1; then
+    dnf install -y epel-release && dnf install -y procps-ng sysstat iotop nmon psmisc
+  else
+    apt-get update && apt-get install -y procps sysstat iotop nmon psmisc
+  fi
+"
+
+```
+
+### 2.2 Injection des surcharges sur `node1` et `node2`
+
+Créez et exécutez le script suivant depuis le Master pour simuler les deux profils d'incidents sur les nœuds cibles :
+
+```
+cat << 'EOF' > ~/diagnostic-j3s3/inject_j3s3.sh
+#!/bin/bash
+set -e
+
+# 1. Surcharge sur node1 : processus de calcul CPU intensif (sha512sum en boucle)
+ansible node1 -b -m ansible.builtin.shell -a '
+  pkill -f "sha512sum /dev/zero" 2>/dev/null || true
+  for i in 1 2; do
+    nohup sha512sum /dev/zero >/dev/null 2>&1 &
+  done
+'
+
+# 2. Surcharge sur node2 : ecritures disques synchrones intensives (I/O Wait)
+ansible node2 -b -m ansible.builtin.shell -a '
+  pkill -f "mco_io_worker" 2>/dev/null || true
+  cat << "IOW" > /usr/local/bin/mco_io_worker.sh
+#!/bin/bash
+while true; do
+  dd if=/dev/zero of=/var/tmp/mco_io_stress.dat bs=4M count=64 conv=fdatasync status=none 2>/dev/null
+done
+IOW
+  chmod +x /usr/local/bin/mco_io_worker.sh
+  nohup /usr/local/bin/mco_io_worker.sh >/dev/null 2>&1 &
+'
+
+echo "Charges temps reel injectees sur node1 et node2 (attendre 15 secondes pour le Load Average)."
+EOF
+
+chmod +x ~/diagnostic-j3s3/inject_j3s3.sh
+~/diagnostic-j3s3/inject_j3s3.sh
+
+```
+
+## 3\. Cahier des charges
+
+### 3.1 Qualification globale avec `vmstat` et `free`
+
+À l'aide de commandes Ad-Hoc Ansible depuis le Master :
+
+1. **Analyse du ratio de charge :**
+
+   * Relevez le nombre de cœurs logiques (`nproc`) et le *Load Average* actuel (`uptime`) sur `node1` et `node2`.  
+2. **Échantillonnage `vmstat` comparé :**
+
+   * Exécutez `vmstat 1 4` sur `node1`, puis `vmstat 1 4` sur `node2`.
+
+   * En ignorant la première ligne de moyenne historique, comparez sur les lignes suivantes :
+
+     * La file d'attente processeur (colonne **`r`**) et les processus bloqués (colonne **`b`**).  
+     * L'activité de pagination mémoire sur le swap (colonnes **`si`** et **`so`**).  
+     * Les blocs écrits sur disque (colonne **`bo`**).  
+     * La répartition du temps processeur entre le calcul utilisateur (**`us`**) et l'attente d'entrées/sorties (**`wa`**).  
+   * Déduisez formellement lequel des deux serveurs subit une saturation processeur (CPU-bound) et lequel subit une saturation disque (I/O-bound).
+
+3. **Vérification de la mémoire vive :**
+
+   * Exécutez `free -m` sur les deux serveurs et vérifiez la colonne `available` pour confirmer que la dégradation ne provient pas d'un épuisement de la RAM.
+
+### 3.2 Diagnostic et résolution de la saturation CPU sur `node1`
+
+Sur `node1`, `vmstat` indique une colonne `r` élevée et un temps processeur `%us` proche de `100%` :
+
+1. **Identification des processus consommateurs :**
+
+   * Utilisez `ps -eo pid,ppid,user,ni,pcpu,pmem,comm --sort=-pcpu | head -n 6` (ou `pidstat -u 1 3`) sur `node1`.
+
+   * Relevez les PID, le nom de la commande (`sha512sum`), le pourcentage CPU consommé et la valeur actuelle de priorité `NI` (*niceness*).
+
+2. **Test de bridage à chaud (`renice`) :**
+
+   * Avant d'arrêter ces processus, abaissez leur priorité d'ordonnancement CPU au minimum (`+19`) à l'aide de la commande `renice -n 19 -p <PID>`.
+
+   * Vérifiez avec `ps` que la colonne `NI` affiche bien `19`.
+
+3. **Neutralisation et contrôle de retour au calme :**
+
+   * Terminez les processus parasites `sha512sum` sur `node1`.
+
+   * Exécutez à nouveau `vmstat 1 3` sur `node1` et vérifiez que la colonne `r` est retombée à `0` et que le pourcentage d'inactivité `id` avoisine `100%`.
+
+### 3.3 Diagnostic et régulation de la saturation I/O sur `node2`
+
+Sur `node2`, `vmstat` révèle une activité d'écriture élevée (`bo`) et un pourcentage d'attente `%wa` significatif :
+
+1. **Analyse des performances du périphérique bloc (`iostat`) :**
+
+   * Exécutez `iostat -xzm 1 3` sur `node2`.
+
+   * Identifiez le disque impacté et relevez son débit d'écriture (`wMB/s`), sa latence moyenne (`w_await` ou `await`) ainsi que son taux de saturation (`%util`).
+
+2. **Identification du processus générateur d'I/O (`iotop` et `pidstat`) :**
+
+   * Exécutez `pidstat -d 1 3` (et/ou `iotop -obP -n 3 -d 1`) sur `node2`.
+
+   * Identifiez le nom du processus et du script parent qui génèrent les écritures continues sur le disque, et vérifiez l'état `D` (*Uninterruptible Sleep*) dans la sortie de `ps -eo pid,stat,comm | grep -E "mco_io|dd"`.
+
+3. **Régulation d'ordonnancement I/O (`ionice`) puis arrêt :**
+
+   * Identifiez le PID du script parent `mco_io_worker.sh` et basculez-le dans la classe d'ordonnancement disque *Idle* (classe `3`) et la priorité CPU `+19` :
+
+```
+ansible node2 -b -m ansible.builtin.shell -a "
+  PID=\$(pgrep -f mco_io_worker.sh | head -n 1)
+  ionice -c 3 -p \$PID
+  renice -n 19 -p \$PID
+  ionice -p \$PID
+"
+
+```
+
+* Arrêtez ensuite définitivement le script `mco_io_worker.sh` et les processus `dd` associés, puis supprimez le fichier temporaire `/var/tmp/mco_io_stress.dat`.
+
+* Vérifiez avec `iostat -xzm 1 3` et `vmstat 1 3` que le taux `%util` et le `%wa` sur `node2` sont revenus à un niveau proche de `0%`.
+
+### 3.4 Synthèse de diagnostic de performance
+
+Rédigez le fichier `~/diagnostic-j3s3/rapport-charge.md` comprenant :
+
+* Le tableau comparatif des valeurs `r`, `b`, `bo`, `us` et `wa` relevées dans `vmstat` sur `node1` et `node2` pendant l'incident.
+
+* L'explication de la raison pour laquelle il faut toujours ignorer la première ligne de sortie de `vmstat` et `iostat`.
+
+* La différence entre la signification d'un processus à l'état `R` et d'un processus à l'état `D`.
+
+## 4\. Critères de validation
+
+Exécutez les commandes suivantes depuis le Master pour valider le retour à l'état nominal des deux serveurs :
+
+```
+# 1. Verification de l'absence des processus de stress CPU et I/O
+ansible production_nodes -a "pgrep -fa 'sha512sum|mco_io_worker'" || echo "Aucun processus parasite actif"
+
+# 2. Verification du temps d'inactivite CPU (id > 90%) et absence d'attente I/O (wa < 5%)
+ansible production_nodes -a "vmstat 1 2"
+
+# 3. Verification de l'activite disque nominale sur node2
+ansible node2 -a "iostat -xzm 1 2"
+
+```
+
+## Synthèse des livrables attendus
+
+| Élément contrôlé | Résultat attendu |
+| :---- | :---- |
+| État CPU sur `node1` | Processus `sha512sum` arrêtés, colonne `r` à `0` et `%id` \> 90% dans `vmstat`. |
+| État I/O sur `node2` | Script `mco_io_worker.sh` arrêté, fichier `/var/tmp/mco_io_stress.dat` purgé et `%wa` \< 5%. |
+| Rapport d'analyse | Fichier `~/diagnostic-j3s3/rapport-charge.md` complété. |
+
+&nbsp;

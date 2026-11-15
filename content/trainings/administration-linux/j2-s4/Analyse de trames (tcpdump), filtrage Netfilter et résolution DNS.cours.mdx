@@ -1,0 +1,192 @@
+# Analyse de trames (tcpdump), filtrage Netfilter et résolution DNS
+
+## 1\. Analyse de paquets réseau avec `tcpdump`
+
+Lorsque les vérifications d'interfaces (`ip a`), de routage (`ip r`) et de sockets (`ss -tlpn`) confirment que le service local est actif et écoute sur la bonne adresse, mais que les clients distants ne parviennent toujours pas à communiquer, l'analyse des trames réseau constitue l'étape d'arbitrage de référence.
+
+L'utilitaire **`tcpdump`** s'appuie sur la bibliothèque `libpcap` pour capturer une copie des trames réseau directement au niveau de la couche liaison du noyau Linux :
+
+* **Flux entrant :** Les paquets sont capturés dès leur arrivée sur la carte réseau, **avant** d'être traités ou bloqués par le pare-feu local Netfilter.
+
+* **Flux sortant :** Les paquets sont capturés juste avant leur émission sur l'interface, **après** avoir franchi le pare-feu local.
+
+Cette position dans le noyau permet de prouver si un paquet arrive réellement jusqu'au serveur et si le serveur tente d'y répondre.
+
+### 1.1 Options essentielles et filtres BPF (*Berkeley Packet Filter*)
+
+Sur un serveur de production ou à travers une commande distante (SSH / Ansible), l'exécution de `tcpdump` doit être bornée et filtrée pour éviter de saturer la console ou de bloquer le terminal indéfiniment :
+
+* **`-nn` :** Désactive la résolution DNS des adresses IP et la traduction des numéros de ports en noms de services (évite tout ralentissement lié à un serveur DNS défaillant).
+
+* **`-i <interface>` (ou `-i any`) :** Spécifie l'interface réseau à écouter (ou toutes les interfaces du système).
+
+* **`-c <nombre>` :** Arrête automatiquement la capture après avoir intercepté `$n$` paquets (obligatoire lors d'un appel non interactif via Ansible).
+
+* **`-A` / `-X` :** Affiche le contenu utile (*payload*) du paquet en texte ASCII (`-A`) ou en hexadécimal et ASCII (`-X`).
+
+* **`-w <fichier.pcap>` / `-r <fichier.pcap>` :** Enregistre les trames brutes dans un fichier binaire standard ou relit un fichier existant.
+
+### 1.2 Lecture des drapeaux TCP dans `tcpdump`
+
+Dans la sortie de `tcpdump`, l'état de chaque segment TCP est représenté dans le champ `Flags [...]` :
+
+| Symbole `tcpdump` | Drapeau TCP | Signification dans l'échange réseau |
+| :---- | :---- | :---- |
+| **`[S]`** | `SYN` | Demande initiale d'ouverture de connexion par le client. |
+| **`[S.]`** | `SYN-ACK` | Acceptation de la connexion par le serveur (poignée de main). |
+| **`[.]`** | `ACK` | Acquittement simple (confirmation de réception). |
+| **`[P.]`** | `PSH-ACK` | Envoi de données applicatives (ex: requête `GET / HTTP/1.1`). |
+| **`[F.]`** | `FIN-ACK` | Demande de fermeture normale de la connexion. |
+| **`[R]`** ou **`[R.]`** | `RST` | Réinitialisation immédiate (rejet par un port fermé ou règle `REJECT`). |
+
+&nbsp;
+
+```
+# 1. Capturer 5 paquets sur le port TCP 80 sans resolution DNS
+tcpdump -nn -i any -c 5 port 80
+
+# 2. Capturer uniquement les paquets entre deux adresses IP precises
+tcpdump -nn -i eth0 host 192.168.4.100 and host 192.168.4.101
+
+# 3. Capturer le trafic DNS (port 53 UDP ou TCP) ou ICMP
+tcpdump -nn -i any port 53 or icmp
+
+# 4. Capturer uniquement les demandes d'ouverture de connexion (SYN) et les rejets (RST)
+tcpdump -nn -i any 'tcp[tcpflags] & (tcp-syn|tcp-rst) != 0'
+
+```
+
+*Interprétation en diagnostic :* Si `tcpdump` sur le serveur cible affiche des paquets entrants `Flags [S]` répétés sans jamais afficher de réponse sortante `Flags [S.]` ni `Flags [R]`, le paquet est détruit à l'intérieur même du serveur par une règle de pare-feu local (`DROP`).
+
+## 2\. Filtrage de paquets : Netfilter, `nftables`, `firewalld` et `ufw`
+
+Sous Linux, le filtrage réseau est assuré au sein du noyau par le sous-système **Netfilter** et son moteur de règles moderne **`nftables`**. Les outils d'administration (`firewalld` sous Rocky Linux / RHEL, ou `ufw` sous Debian / Ubuntu) sont des interfaces qui pilotent ce même moteur noyau.
+
+### 2.1 Les points d'accroche (*Hooks*) de Netfilter
+
+Un paquet réseau traverse des chaînes de filtrage distinctes selon sa destination :
+
+1. **`PREROUTING` :** Paquet arrivant sur l'interface avant la décision de routage (utilisé pour la redirection de port / DNAT).
+
+2. **`INPUT` :** Paquet dont l'adresse IP de destination appartient au serveur local lui-même. C'est dans cette chaîne que sont filtrés les accès aux services locaux (SSH, HTTP, NRPE).
+
+3. **`FORWARD` :** Paquet transitant par le serveur pour être routé vers une autre machine (serveur configuré en routeur ou hôte de conteneurs).
+
+4. **`OUTPUT` :** Paquet émis localement par un processus du serveur vers l'extérieur.
+
+5. **`POSTROUTING` :** Paquet sortant après la décision de routage (utilisé pour le masquage d'adresse source / SNAT).
+
+### 2.2 Différence opérationnelle entre `DROP` et `REJECT`
+
+Lorsqu'une règle de pare-feu interdit un paquet dans la chaîne `INPUT`, deux politiques d'action sont possibles :
+
+* **`DROP` (Suppression silencieuse) :** Le noyau libère la mémoire occupée par le paquet et n'envoie aucune réponse à l'émetteur. Le client attend une réponse et réémet des paquets `SYN` jusqu'à l'expiration de son délai (`Connection timed out`).
+
+* **`REJECT` (Rejet explicite) :** Le noyau détruit le paquet et renvoie immédiatement un paquet d'erreur à l'émetteur (`TCP RST` ou `ICMP Port Unreachable`). Le client s'arrête aussitôt avec le message `Connection refused` ou `Destination port unreachable`.
+
+## 3\. Chaîne de résolution de noms (DNS) sous Linux
+
+Lorsqu'une commande ou une application appelle la bibliothèque système C (`glibc`) pour résoudre un nom d'hôte en adresse IP (`getaddrinfo()`), le système suit un parcours strict.
+
+### 3.1 Le commutateur `/etc/nsswitch.conf` et `/etc/hosts`
+
+Le fichier **`/etc/nsswitch.conf`** définit l'ordre dans lequel les bases de noms sont consultées via la ligne `hosts:` :
+
+```
+# Exemple standard dans /etc/nsswitch.conf
+hosts: files dns myhostname
+
+```
+
+1. **`files` :** Le système lit d'abord le fichier local **`/etc/hosts`**. Si une correspondance erronée y est inscrite, elle prend le pas sur le serveur DNS sans qu'aucune requête réseau ne soit émise.
+
+2. **`dns` :** Si le nom est absent de `/etc/hosts`, le système interroge les serveurs de noms déclarés dans **`/etc/resolv.conf`**.
+
+### 3.2 Le résolveur `/etc/resolv.conf` et `systemd-resolved`
+
+Le fichier `/etc/resolv.conf` contient les directives `nameserver <IP>` (jusqu'à 3 serveurs interrogés dans l'ordre), `search <domaine>` et `options timeout:<sec>`.
+
+Sur les systèmes utilisant le démon **`systemd-resolved`** :
+
+* Le fichier `/etc/resolv.conf` est un lien symbolique pointant vers `/run/systemd/resolve/stub-resolv.conf`.
+
+* Il indique l'adresse locale **`nameserver 127.0.0.53`**, qui correspond au *Stub Listener* local gérant le cache DNS en mémoire et le routage des requêtes par interface réseau.
+
+* Si le service `systemd-resolved` est arrêté alors que `/etc/resolv.conf` pointe toujours sur `127.0.0.53` (ou si `/etc/resolv.conf` a été écrasé avec une adresse IP injoignable), toutes les résolutions DNS du serveur échouent (`Temporary failure in name resolution`).
+
+## 4\. Mémo technique opérationnel
+
+Cette section regroupe les commandes de gestion du pare-feu (`firewalld`, `ufw`, `nftables`) et de diagnostic DNS (`dig`, `getent`, `resolvectl`).
+
+### 4.1 Audit et administration du pare-feu sous Rocky Linux (`firewalld`)
+
+Sous Rocky Linux 9, `firewalld` distingue la configuration **en cours d'exécution** (*Runtime*, immédiate mais perdue au rechargement) et la configuration **permanente** (`--permanent`, écrite sur disque mais nécessitant un `--reload` pour être active).
+
+```
+# 1. Afficher la zone active et toutes les regles appliquees (services, ports, rich rules)
+firewall-cmd --list-all
+
+# 2. Autoriser un service ou un port TCP a chaud ET de maniere permanente
+firewall-cmd --add-service=http
+firewall-cmd --add-service=http --permanent
+firewall-cmd --add-port=8080/tcp --permanent
+
+# 3. Lister et supprimer une regle avancee de blocage (Rich Rule)
+firewall-cmd --list-rich-rules
+firewall-cmd --remove-rich-rule='rule family="ipv4" port port="80" protocol="tcp" drop'
+firewall-cmd --remove-rich-rule='rule family="ipv4" port port="80" protocol="tcp" drop' --permanent
+
+# 4. Recharger le pare-feu pour appliquer la configuration permanente
+firewall-cmd --reload
+
+```
+
+### 4.2 Audit et administration du pare-feu sous Debian (`ufw`) et bas niveau (`nft`)
+
+```
+# 1. Afficher les regles UFW avec leur numero d'index
+ufw status numbered
+
+# 2. Supprimer une regle de blocage par sa definition ou son index et autoriser le port 80
+ufw delete deny 80/tcp
+ufw allow 80/tcp
+
+# 3. Inspecter directement les tables bas niveau dans le noyau (toutes distributions)
+nft list ruleset
+
+```
+
+### 4.3 Diagnostic et réparation de la résolution DNS
+
+Pour diagnostiquer un problème de résolution de noms, il convient de distinguer un test direct du serveur DNS (`dig`, qui ignore `/etc/nsswitch.conf` et `/etc/hosts`) d'un test utilisant la bibliothèque système complète (`getent hosts`).
+
+```
+# 1. Tester la resolution telle qu'elle est vue par les applications (respecte nsswitch.conf et /etc/hosts)
+getent hosts rocky.infra.lan
+getent hosts google.com
+
+# 2. Interroger le serveur DNS par defaut et afficher uniquement la reponse courte
+dig +short google.com
+
+# 3. Tester un serveur DNS specifique (ex: 1.1.1.1) avec un delai court de 2 secondes
+dig @1.1.1.1 +time=2 +tries=1 google.com
+
+# 4. Verifier l'etat de systemd-resolved (si utilise sur la distribution)
+resolvectl status
+resolvectl query google.com
+
+# 5. Verifier l'ordre de resolution et les serveurs configures
+grep "^hosts:" /etc/nsswitch.conf
+cat /etc/resolv.conf
+
+```
+
+## Synthèse : Arbre de décision d'un incident réseau et DNS
+
+| Constat lors du test | Outil de vérification | Cause racine et action corrective |
+| :---- | :---- | :---- |
+| `tcpdump` voit les `[S]` entrants sur le port 80, mais aucun `[S.]` ne repart alors que Nginx écoute. | `firewall-cmd --list-all` / `ufw status` / `nft list ruleset` | Le pare-feu local bloque le port en mode `DROP`. Supprimer la règle de blocage et autoriser `80/tcp`. |
+| `dig @1.1.1.1 domaine` fonctionne, mais `dig domaine` expire en timeout. | `cat /etc/resolv.conf` | Le serveur DNS configuré dans `/etc/resolv.conf` est invalide ou injoignable. Corriger la directive `nameserver`. |
+| `dig domaine` retourne la bonne IP, mais `ping` ou `curl` contacte une mauvaise IP. | `getent hosts <domaine>` et `cat /etc/nsswitch.conf` | Une entrée statique erronée dans `/etc/hosts` surcharge le DNS, ou la ligne `hosts:` de `/etc/nsswitch.conf` est altérée. |
+
+&nbsp;

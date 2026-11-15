@@ -1,0 +1,182 @@
+# TP : Analyse de trames (tcpdump), filtrage Netfilter et résolution DNS
+
+## 1\. Objectifs
+
+Les vérifications effectuées lors du segment précédent ont permis de rétablir l'écoute des sockets locales et le routage. Toutefois, de nouveaux incidents bloquent la mise en production des serveurs :
+
+* **Incident 1 (`node1` \- `192.168.4.101`) :** Le service `nginx` est actif et écoute sur `0.0.0.0:80`, mais toutes les requêtes HTTP émises depuis le Master vers `http://192.168.4.101` expirent après le délai d'attente (`Connection timed out`).
+
+* **Incident 2 (`node2` \- `192.168.4.102`) :** Le serveur ne parvient plus à résoudre les noms de domaines externes (`Temporary failure in name resolution`) et dirige ses flux internes destinés à `api.infra.lan` (`192.168.4.100`) vers une adresse IP erronée.
+
+Vous devez utiliser `tcpdump` pour prouver le comportement des trames sur l'interface de `node1`, auditer et corriger les règles de filtrage Netfilter (`firewalld` ou `ufw`), puis réparer la chaîne de résolution de noms (`/etc/nsswitch.conf`, `/etc/hosts` et `/etc/resolv.conf`) sur `node2`.
+
+Toutes les opérations sont conduites depuis le nœud **Master** (`192.168.4.100`) dans le répertoire `~/diagnostic-j2s4/`.
+
+## 2\. Préparation de l'environnement et injection des pannes
+
+1. Créez le répertoire de travail `~/diagnostic-j2s4/` sur le Master et copiez-y votre configuration Ansible :
+
+```
+mkdir -p ~/diagnostic-j2s4
+cd ~/diagnostic-j2s4
+cp ~/tp-ansible/ansible.cfg ~/tp-ansible/inventory.ini .
+
+```
+
+2. Créez et exécutez le script suivant depuis le Master pour injecter les anomalies de filtrage et de résolution DNS sur `node1` et `node2` :
+
+```
+cat << 'EOF' > ~/diagnostic-j2s4/inject_j2s4.sh
+#!/bin/bash
+set -e
+
+# 1. Anomalie sur node1 : blocage silencieux (DROP) du port TCP 80 par le pare-feu local
+ansible node1 -b -m ansible.builtin.shell -a '
+  systemctl start nginx
+  if command -v firewall-cmd >/dev/null 2>&1; then
+    systemctl enable --now firewalld
+    firewall-cmd --remove-service=http --permanent 2>/dev/null || true
+    firewall-cmd --remove-port=80/tcp --permanent 2>/dev/null || true
+    firewall-cmd --add-rich-rule="rule family=\"ipv4\" port port=\"80\" protocol=\"tcp\" drop" --permanent
+    firewall-cmd --reload
+  elif command -v ufw >/dev/null 2>&1; then
+    ufw --force reset >/dev/null 2>&1
+    ufw default allow outgoing
+    ufw default deny incoming
+    ufw allow 22/tcp
+    ufw deny proto tcp to any port 80
+    ufw --force enable
+  fi
+'
+
+# 2. Anomalies sur node2 : ordre nsswitch altere, entree /etc/hosts erronee et serveur DNS invalide
+ansible node2 -b -m ansible.builtin.shell -a '
+  sed -i "/api.infra.lan/d" /etc/hosts
+  echo "192.0.2.99 api.infra.lan" >> /etc/hosts
+  sed -i -E "s/^hosts:.*/hosts: files/" /etc/nsswitch.conf
+
+  systemctl stop systemd-resolved 2>/dev/null || true
+  rm -f /etc/resolv.conf
+  cat << "RES" > /etc/resolv.conf
+nameserver 192.0.2.123
+options timeout:1 attempts:1
+RES
+'
+
+echo "Anomalies de filtrage et de DNS injectees sur node1 et node2."
+EOF
+
+chmod +x ~/diagnostic-j2s4/inject_j2s4.sh
+~/diagnostic-j2s4/inject_j2s4.sh
+
+```
+
+## 3\. Cahier des charges
+
+### 3.1 Arbitrage par capture de trames (`tcpdump`) sur `node1`
+
+Depuis le Master, constatez le symptôme avec la commande `curl -Iv --connect-timeout 3 http://192.168.4.101`, puis démontrez que les paquets atteignent bien la carte réseau de `node1` :
+
+1. **Lancement d'une capture bornée :**
+
+   * À l'aide d'Ansible, lancez `tcpdump` en tâche de fond sur `node1` pour capturer 3 paquets sur le port TCP 80 et rediriger la sortie dans `/tmp/capture_http.txt` :
+
+```
+ansible node1 -b -m ansible.builtin.shell -a "nohup tcpdump -nn -i any -c 3 port 80 > /tmp/capture_http.txt 2>&1 &"
+
+```
+
+2. **Émission du flux de test :**
+
+   * Depuis le Master, exécutez immédiatement une tentative de connexion vers `node1` :
+
+```
+nc -zv -w 3 192.168.4.101 80 || true
+
+```
+
+3. **Analyse de la trace :**
+
+   * Récupérez le contenu de `/tmp/capture_http.txt` sur `node1`.
+
+   * Relevez les drapeaux TCP présents (`Flags [S]`) et vérifiez si `node1` a émis un paquet de réponse (`Flags [S.]` ou `Flags [R]`).
+
+### 3.2 Audit et correction du pare-feu sur `node1`
+
+La capture `tcpdump` ayant confirmé que les paquets `SYN` entrent sur l'interface mais sont détruits localement :
+
+1. **Inspection des règles Netfilter :**
+
+   * Auditez la configuration du pare-feu actif sur `node1` (`firewall-cmd --list-all` sous Rocky Linux, ou `ufw status numbered` sous Debian), ainsi que les règles bas niveau du noyau avec `nft list ruleset`.
+
+   * Identifiez la règle qui applique une action `drop` sur le port TCP `80`.
+
+2. **Remédiation et persistance :**
+
+   * Supprimez la règle de blocage sur le port `80/tcp`.
+
+   * Autorisez explicitement le flux HTTP (`80/tcp`) à chaud et de manière permanente.
+
+   * Vérifiez depuis le Master que la requête `curl -I http://192.168.4.101` retourne désormais `HTTP/1.1 200 OK` sans délai.
+
+### 3.3 Diagnostic et réparation de la chaîne DNS sur `node2`
+
+Sur `node2`, les applications ne parviennent plus à contacter correctement `api.infra.lan` (qui doit pointer vers `192.168.4.100`) ni à résoudre les domaines externes :
+
+1. **Audit de la résolution locale (`/etc/hosts` et `/etc/nsswitch.conf`) :**
+
+   * Exécutez `getent hosts api.infra.lan` sur `node2` et relevez l'adresse IP retournée.
+
+   * Inspectez le fichier `/etc/hosts` sur `node2` et corrigez l'entrée `api.infra.lan` pour qu'elle pointe vers l'adresse IP du Master (`192.168.4.100`).
+
+   * Inspectez la ligne `hosts:` du fichier `/etc/nsswitch.conf` sur `node2`. Expliquez pourquoi le système ne consulte même pas les serveurs DNS pour les noms absents de `/etc/hosts`, puis rétablissez la configuration standard : `hosts: files dns myhostname`.
+
+2. **Audit et correction des serveurs DNS (`/etc/resolv.conf`) :**
+
+   * Testez la résolution d'un domaine externe sur `node2` avec `dig +short google.com` (ou `getent hosts google.com`) et constatez l'échec.
+
+   * Affichez le contenu de `/etc/resolv.conf` sur `node2` et identifiez l'adresse IP du serveur de noms invalide (`192.0.2.123`).
+
+   * Remplacez ce serveur de noms par le résolveur DNS valide de votre environnement (par exemple la passerelle DNS locale ou `1.1.1.1` / `8.8.8.8` — ou réactivez `systemd-resolved` si votre distribution l'utilise par défaut).
+
+   * Vérifiez le bon fonctionnement de la chaîne complète avec `getent hosts api.infra.lan` et `getent hosts google.com`.
+
+### 3.4 Rapport d'analyse réseau
+
+Créez le fichier `~/diagnostic-j2s4/rapport-filtrage-dns.md` contenant :
+
+* L'extrait de la capture `tcpdump` réalisée sur `node1` et son interprétation.
+
+* La différence de comportement observée côté client entre une règle pare-feu `DROP` et une règle `REJECT`.
+
+* Le rôle respectif de `/etc/nsswitch.conf`, `/etc/hosts` et `/etc/resolv.conf` lors d'un appel `getent hosts`.
+
+## 4\. Critères de validation
+
+Exécutez les commandes suivantes depuis le Master pour valider la conformité finale du Jour 2 :
+
+```
+# 1. Verification de l'ouverture HTTP dans le pare-feu de node1 et test client
+ansible node1 -b -m ansible.builtin.shell -a "firewall-cmd --list-all 2>/dev/null || ufw status"
+curl -I http://192.168.4.101
+
+# 2. Verification de la configuration nsswitch et de la resolution interne sur node2
+ansible node2 -a "grep '^hosts:' /etc/nsswitch.conf"
+ansible node2 -a "getent hosts api.infra.lan"
+
+# 3. Verification de la resolution DNS externe et de la latence HTTP sur node2
+ansible node2 -a "cat /etc/resolv.conf"
+curl -s -o /dev/null -w "Connect: %{time_connect}s | HTTP: %{http_code}\n" http://192.168.4.101
+
+```
+
+## Synthèse
+
+| Élément contrôlé | Résultat attendu |
+| :---- | :---- |
+| Capture `tcpdump` (`node1`) | Fichier `/tmp/capture_http.txt` montrant les paquets `Flags [S]` entrants sans réponse. |
+| Pare-feu (`node1`) | Règle `drop` supprimée, port `80/tcp` autorisé de façon permanente et `HTTP 200 OK`. |
+| Résolution de noms (`node2`) | `hosts: files dns myhostname` actif, `api.infra.lan` résolu en `192.168.4.100` et DNS fonctionnel. |
+| Rapport d'analyse | Fichier `~/diagnostic-j2s4/rapport-filtrage-dns.md` complété. |
+
+&nbsp;

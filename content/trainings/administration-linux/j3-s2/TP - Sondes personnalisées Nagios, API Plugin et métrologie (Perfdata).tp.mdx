@@ -1,0 +1,171 @@
+# TP : Sondes personnalisées Nagios, API Plugin et métrologie (Perfdata)
+
+## 1\. Contexte et objectifs de l'atelier
+
+Le socle de supervision Nagios Core et les agents NRPE déployés lors du segment précédent permettent de surveiller les métriques systèmes standards. Cependant, l'équipe d'exploitation souhaite détecter les **pannes silencieuses applicatives** sur les serveurs web `node1` et `node2` : des situations où le démon `nginx` est bien démarré et écoute sur le port 80, mais où plus aucune transaction n'est enregistrée dans `/var/log/nginx/access.log`.
+
+Vous devez concevoir une sonde conforme à l'API Plugin Nagios nommée **`check_nginx_activity.sh`**, formater ses données de performance (*Perfdata*), automatiser son déploiement sur les nœuds via Ansible en gérant les droits de lecture du compte de service NRPE, puis l'intégrer dans l'ordonnanceur Nagios Core sur le **Master** (`192.168.4.100`).
+
+Toutes les opérations sont réalisées depuis le Master dans le répertoire `~/tp-nagios/`.
+
+## 2\. Conception de la sonde personnalisée (`check_nginx_activity.sh`)
+
+1. Créez un sous-répertoire `~/tp-nagios/files/` sur le Master :
+
+```
+mkdir -p ~/tp-nagios/files
+cd ~/tp-nagios
+
+```
+
+2. Rédigez le script `~/tp-nagios/files/check_nginx_activity.sh` en respectant le cahier des charges suivant (vous pouvez vous appuyer sur la structure de référence de la section 4.1 du support de cours) :
+
+   * **Paramètres d'entrée :**
+
+     * `-f <chemin>` : chemin du fichier journal à analyser (par défaut `/var/log/nginx/access.log`).  
+     * `-w <secondes>` : seuil d'avertissement `WARNING` d'inactivité (par défaut `300`).  
+     * `-c <secondes>` : seuil critique `CRITICAL` d'inactivité (par défaut `900`).  
+   * **Contrôles de sécurité et cas `UNKNOWN` (code `3`) :**
+
+     * Vérifier que les seuils `-w` et `-c` sont des entiers positifs et que `WARN < CRIT`.  
+     * Vérifier que le fichier journal existe (`-f`) et qu'il est accessible en lecture (`-r`) par l'utilisateur exécutant la sonde, et qu'il n'est pas vide.  
+   * **Calcul et formatage des *Perfdata* :**
+
+     * Extraire l'horodatage de la dernière ligne du journal, le convertir en secondes Epoch et calculer l'écart $\Delta t$ avec l'heure actuelle.  
+     * Générer le bloc de métrologie après le caractère tube : `| 'inactivity_sec'=<valeur>s;<warn>;<crit>;0;`  
+   * **Arbitrage des états et codes de sortie :**
+
+     * Si $\Delta t \ge \text{CRIT}$ : afficher `CRITICAL: ...` avec les *Perfdata* et quitter avec le code `2`.  
+     * Si $\Delta t \ge \text{WARN}$ : afficher `WARNING: ...` avec les *Perfdata* et quitter avec le code `1`.  
+     * Sinon : afficher `OK: ...` avec les *Perfdata* et quitter avec le code `0`.  
+3. Rendez le script exécutable localement et vérifiez sa syntaxe Bash :
+
+```
+chmod +x ~/tp-nagios/files/check_nginx_activity.sh
+bash -n ~/tp-nagios/files/check_nginx_activity.sh
+
+```
+
+## 3\. Industrialisation du déploiement via Ansible
+
+### 3.1 Rédaction du playbook `deploy_custom_probe.yml`
+
+Créez le playbook `~/tp-nagios/deploy_custom_probe.yml` ciblant le groupe `production_nodes` (`become: true`) pour automatiser la mise en place de la sonde sur `node1` et `node2` :
+
+1. **Copie du plugin :** Déployer `files/check_nginx_activity.sh` dans le répertoire des plugins Nagios (créer le dossier `/usr/lib64/nagios/plugins` et `/usr/lib/nagios/plugins` ou un lien symbolique pour garantir la compatibilité quelle que soit la distribution) avec le propriétaire `root:root` et le mode `0755`.
+
+2. **Gestion des droits de lecture sur les journaux Nginx :** Le démon NRPE s'exécutant sous un compte non privilégié (`nrpe` ou `nagios`), assurez-vous que le dossier `/var/log/nginx` est traversable (`0755`) et que le fichier `/var/log/nginx/access.log` est lisible en lecture (`0644`).
+
+3. **Déclaration de la commande NRPE :** Créer le fichier `/etc/nagios/nrpe.d/mco_activity.cfg` contenant la définition :
+
+```
+command[check_nginx_activity]=/usr/lib64/nagios/plugins/check_nginx_activity.sh -f /var/log/nginx/access.log -w 300 -c 900
+
+```
+
+*(Adaptez le chemin vers `/usr/lib/nagios/plugins/` si vos nœuds sont sous Debian).*
+
+4. **Rechargement de l'agent :** Associer un *handler* redémarrant le service de l'agent NRPE (`nrpe` ou `nagios-nrpe-server`) en cas de changement.
+
+### 3.2 Exécution du playbook et tests sous identité restreinte
+
+1. Exécutez le playbook depuis le Master :
+
+```
+ansible-playbook ~/tp-nagios/deploy_custom_probe.yml
+
+```
+
+2. Générez une requête HTTP vers `node1` et `node2` afin d'inscrire une transaction récente dans leurs journaux `access.log` :
+
+```
+curl -s -I http://192.168.4.101/ >/dev/null
+curl -s -I http://192.168.4.102/ >/dev/null
+
+```
+
+3. Vérifiez via Ansible que la sonde renvoie bien le code `3` (`UNKNOWN`) lorsque des seuils incohérents lui sont fournis (`-w 900 -c 300`) :
+
+```
+ansible node1 -b -m ansible.builtin.shell -a "/usr/lib*/nagios/plugins/check_nginx_activity.sh -w 900 -c 300; echo RC=\$?"
+
+```
+
+## 4\. Intégration dans l'ordonnanceur Nagios Core
+
+Sur le Master :
+
+1. Éditez votre fichier de déclaration des services (`/etc/nagios/conf.d/services_mco.cfg` sous Rocky Linux ou `/etc/nagios4/conf.d/services_mco.cfg` sous Debian).
+
+2. Ajoutez le bloc de définition du service `Activite Trafic Nginx` rattaché au groupe `production-servers` :
+
+```
+define service {
+    use                     generic-service
+    hostgroup_name          production-servers
+    service_description     Activite Trafic Nginx
+    check_command           check_nrpe!check_nginx_activity
+    max_check_attempts      3
+    check_interval          1
+    retry_interval          1
+}
+
+```
+
+3. Vérifiez la validité syntaxique de la configuration avec `nagios -v /etc/nagios/nagios.cfg` (ou `nagios4 -v /etc/nagios4/nagios.cfg`), puis rechargez le service Nagios.
+
+## 5\. Protocole de validation et simulation d'inactivité
+
+### 5.1 Contrôle nominal et vérification des *Perfdata*
+
+Depuis le Master, interrogez la sonde distante via `check_nrpe` :
+
+```
+CHECK_NRPE=$(command -v check_nrpe || ls /usr/lib*/nagios/plugins/check_nrpe | head -n 1)
+$CHECK_NRPE -H 192.168.4.101 -c check_nginx_activity
+echo "Code retour : $?"
+
+```
+
+Vérifiez que la sortie commence par `OK:`, comporte le séparateur `|` suivi de `'inactivity_sec'=...s;300;900;0;` et retourne un code égal à `0`.
+
+### 5.2 Simulation d'une panne silencieuse (`CRITICAL`)
+
+1. Sur `node1`, injectez à la fin du fichier `/var/log/nginx/access.log` une ligne de journal datée d'il y a 20 minutes ($1\,200\text{ s} > 900\text{ s}$) sans arrêter le démon Nginx :
+
+```
+OLD_DATE=$(LC_ALL=C date -d "20 minutes ago" +"%d/%b/%Y:%H:%M:%S %z")
+ansible node1 -b -m ansible.builtin.shell -a "echo '192.168.4.100 - - [$OLD_DATE] \"GET /health HTTP/1.1\" 200 128' >> /var/log/nginx/access.log"
+
+```
+
+2. Interrogez immédiatement la sonde depuis le Master :
+
+```
+$CHECK_NRPE -H 192.168.4.101 -c check_nginx_activity
+echo "Code retour : $?"
+
+```
+
+Constatez que la sonde retourne l'état `CRITICAL` et le code de sortie `2`, alors que le service `Disponibilite HTTP Port 80` reste à l'état `OK`.
+
+### 5.3 Rétablissement du trafic nominal (`Recovery`)
+
+1. Émettez une nouvelle requête HTTP réelle vers `node1` :
+
+```
+curl -s -I http://192.168.4.101/ >/dev/null
+
+```
+
+2. Interrogez à nouveau la sonde avec `check_nrpe` et vérifiez le retour immédiat à l'état `OK` (code retour `0`).
+
+## Synthèse des livrables attendus
+
+| Élément contrôlé | Critère de validation |
+| :---- | :---- |
+| Script `check_nginx_activity.sh` | Respect des codes `0`, `1`, `2`, `3` et présence du bloc `'inactivity_sec'=...` après le tube `|`. |
+| Playbook `deploy_custom_probe.yml` | Déploiement automatisé de la sonde, ajustement des droits sur `access.log` et déclaration NRPE. |
+| Simulation d'inactivité | Passage en `CRITICAL` (code `2`) lors de l'injection d'un horodatage \> 900s, puis retour en `OK` après `curl`. |
+
+&nbsp;

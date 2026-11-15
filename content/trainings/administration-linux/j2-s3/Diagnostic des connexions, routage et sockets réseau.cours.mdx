@@ -1,0 +1,205 @@
+# Diagnostic des connexions, routage et sockets réseau
+
+## 1\. Architecture de la pile réseau Linux et `iproute2`
+
+Lors d'un incident de connectivité réseau en production, la démarche de diagnostic suit les couches basses et moyennes du modèle OSI : l'état de l'interface (couches 1 et 2), l'adressage IP et le routage (couche 3), puis les sockets de transport TCP/UDP (couche 4).
+
+Historiquement, l'administration réseau sous Linux reposait sur la suite `net-tools` (`ifconfig`, `route`, `netstat`, `arp`). Cet ensemble d'outils est déprécié car il interroge le noyau en lisant séquentiellement des fichiers textes virtuels dans `/proc/net/`. Sur un serveur gérant des dizaines de milliers de connexions simultanées, la lecture de `/proc/net/tcp` par `netstat` ralentit le système et ne permet pas de visualiser les fonctionnalités modernes (espaces de noms réseau, tables de routage multiples, interfaces virtuelles).
+
+La suite standard **`iproute2`** (`ip`, `ss`, `bridge`) communique directement avec le noyau Linux via l'interface binaire asynchrone **Netlink**, garantissant une interrogation immédiate sans surcharge CPU.
+
+### 1.1 Équivalence des outils réseau
+
+| Fonction d'administration | Ancien outil (`net-tools`) | Outil standard (`iproute2`) |
+| :---- | :---- | :---- |
+| État des interfaces physiques et MAC | `ifconfig -a` | `ip link show` |
+| Adressage IPv4 / IPv6 | `ifconfig` | `ip address show` (`ip -c a`) |
+| Table de routage | `route -n` | `ip route show` (`ip -c r`) |
+| Table de voisinage (ARP / NDP) | `arp -an` | `ip neighbor show` (`ip neigh`) |
+| Statistiques des sockets et ports | `netstat -tulpn` | `ss -tulpn` |
+
+## 2\. Diagnostic des interfaces, du voisinage et du routage (Couches 2 et 3\)
+
+Avant d'inspecter les services applicatifs, l'administrateur vérifie que la carte réseau est active, que la résolution d'adresse matérielle (ARP) aboutit et que le noyau dispose d'une route valide vers la destination.
+
+### 2.1 Inspection de la liaison et des compteurs d'erreurs (`ip link` et `ip neigh`)
+
+L'état d'une interface dans `ip link` comporte deux indicateurs distincts :
+
+* **`UP` (dans `<BROADCAST,MULTICAST,UP,LOWER_UP>`) :** Indique que l'interface est activée administrativement par le système d'exploitation.
+
+* **`LOWER_UP` :** Indique que le lien physique (couche 1 : câble branché ou commutateur virtuel connecté) est établi.
+
+L'option `-s` (*statistics*) affiche les compteurs matériels de trames reçues (`RX`) et émises (`TX`) :
+
+* **`errors` :** Trames altérées (problème de câble, d'interface virtuelle ou de négociation duplex).
+
+* **`dropped` :** Paquets rejetés par manque d'espace dans les tampons mémoire (*ring buffers*) de la carte réseau ou par une règle de filtrage bas niveau.
+
+La commande **`ip neigh`** inspecte le cache ARP (IPv4) et NDP (IPv6) et indique l'état de joignabilité des machines sur le même segment local :
+
+* **`REACHABLE` :** Le voisin a répondu récemment à une requête ARP, la liaison de couche 2 est confirmée.
+
+* **`STALE` :** L'entrée est ancienne et devra être revalidée au prochain envoi.
+
+* **`FAILED` :** Aucune réponse ARP reçue (`Destination Host Unreachable`). L'adresse IP cible est éteinte, absente du VLAN ou bloquée au niveau du commutateur.
+
+```
+# 1. Verifier l'etat des interfaces et les compteurs d'erreurs de trames
+ip -s -c link show
+
+# 2. Afficher les adresses IPv4 configurees sur toutes les interfaces
+ip -4 -c address show
+
+# 3. Inspecter la table ARP et detecter les voisins injoignables (FAILED)
+ip -c neighbor show
+
+# 4. Purger une entree ARP obsolete sur une interface
+ip neigh flush dev eth0
+
+```
+
+### 2.2 Analyse du routage et du chemin réseau (`ip route` et `traceroute`)
+
+Lorsqu'un serveur doit émettre un paquet IP, le noyau consulte sa table de routage du masque le plus spécifique (`/32`, `/24`) vers le moins spécifique (`default` ou `0.0.0.0/0`).
+
+Une anomalie fréquente en production est le **routage asymétrique** ou la présence d'une **route statique erronée** : un serveur reçoit bien le paquet entrant d'un client, mais sa table de routage locale renvoie le paquet de réponse vers une mauvaise passerelle ou une mauvaise interface.
+
+La sous-commande **`ip route get <IP_cible>`** interroge directement le moteur de décision du noyau pour connaître avec certitude quelle interface et quelle adresse source seront utilisées pour joindre une adresse donnée :
+
+```
+# 1. Afficher la table de routage principale
+ip -c route show
+
+# 2. Interroger le noyau sur la route exacte empruntee pour joindre une IP
+ip route get 192.168.4.100
+ip route get 10.20.30.40
+
+# 3. Ajouter ou supprimer une route statique a chaud
+ip route add 10.20.30.0/24 via 192.168.4.1 dev eth0
+ip route del 10.20.30.0/24
+
+```
+
+Pour identifier à quel saut réseau (*hop*) un paquet est bloqué entre deux sous-réseaux :
+
+* **`traceroute` :** Envoie des paquets (UDP par défaut, ou ICMP avec `-I`, ou TCP SYN avec `-T -p <port>`) en incrémentant la valeur du champ `TTL` (*Time To Live*) de 1 à 30\. Chaque routeur intermédiaire décrémente le TTL et renvoie un message ICMP `Time Exceeded`.
+
+* **`tracepath` :** Équivalent ne nécessitant pas de privilèges `root` et mesurant simultanément la taille maximale de paquet sans fragmentation (*Path MTU*).
+
+```
+# 1. Tracer le chemin reseau en TCP sur le port 80 sans resolution DNS (-n)
+traceroute -n -T -p 80 192.168.4.101
+
+# 2. Identifier le chemin et la MTU maximale avec tracepath
+tracepath -n 192.168.4.101
+
+```
+
+## 3\. Cycle de vie des connexions TCP et états des sockets
+
+En couche 4, une communication TCP repose sur l'ouverture d'une **socket** identifiée par un quadruplet : `{IP_source, Port_source, IP_destination, Port_destination}`.
+
+### 3.1 Les états de la machine à états TCP
+
+Lors de l'inspection des connexions avec l'outil `ss`, chaque socket TCP présente un état précis défini par la RFC 793 :
+
+1. **`LISTEN` :** Le processus serveur a réservé le port local (`bind`) et attend les connexions entrantes.
+
+2. **`SYN-SENT` :** Le client a envoyé un paquet d'initialisation `SYN` et attend le `SYN-ACK` du serveur. Si la socket reste bloquée dans cet état, le flux est filtré en chemin ou la route de retour est coupée.
+
+3. **`SYN-RECV` :** Le serveur a reçu le `SYN`, a répondu `SYN-ACK` et attend le `ACK` final du client. Une accumulation massive d'entrées `SYN-RECV` signale une attaque par inondation (*SYN Flood*) ou un problème de routage retour vers les clients.
+
+4. **`ESTAB` (`ESTABLISHED`) :** La poignée de main en trois étapes (*3-Way Handshake*) est terminée ; les données circulent.
+
+5. **`CLOSE-WAIT` :** Le client distant a fermé la connexion (envoi d'un paquet `FIN`), le noyau local a acquitté, mais **le programme serveur local n'a pas encore fermé son descripteur de fichier (`close()`)**. Une accumulation de sockets en `CLOSE-WAIT` indique un défaut logiciel dans l'application locale (fuite de descripteurs).
+
+6. **`TIME-WAIT` :** La connexion est fermée des deux côtés, mais le noyau maintient le quadruplet réservé pendant quelques dizaines de secondes (généralement 60s) pour ignorer d'éventuels paquets retardés sur le réseau.
+
+### 3.2 Restrictions d'adresse d'écoute (*Bind Address*)
+
+Lorsqu'un démon se met en état `LISTEN`, l'adresse IP locale à laquelle il se lie détermine qui peut le contacter :
+
+* **`0.0.0.0:80` (ou `*:80` / `[::]:80`) :** Le service écoute sur l'adresse générique (*wildcard*), c'est-à-dire sur **toutes** les interfaces réseau présentes sur le serveur.
+
+* **`127.0.0.1:80` (ou `[::1]:80`) :** Le service écoute exclusivement sur l'interface de bouclage locale (*loopback*). Les tests effectués depuis le serveur lui-même (`curl http://localhost`) réussissent, mais toute tentative de connexion provenant d'un autre serveur sur `192.168.4.x:80` est immédiatement rejetée par le noyau avec un paquet TCP `RST` (`Connection refused`).
+
+* **`192.168.4.101:80` :** Le service écoute uniquement sur l'interface possédant cette adresse IP précise.
+
+## 4\. Mémo technique opérationnel
+
+Cette section rassemble les commandes d'analyse des sockets (`ss`), des descripteurs de fichiers (`lsof`) et des tests de connectivité de couche 4\.
+
+### 4.1 Analyse des sockets et des files d'attente avec `ss`
+
+Les options courantes de `ss` sont : `-t` (TCP), `-u` (UDP), `-x` (Sockets UNIX locales), `-l` (Listen), `-a` (Toutes), `-p` (Processus/PID, requiert `root`), `-n` (Numérique, sans résolution DNS).
+
+```
+# 1. Lister tous les ports TCP et UDP en ecoute avec les processus associes
+ss -tulpn
+
+# 2. Filtrer sur un port source specifique (ex: port 80 ou 8080)
+ss -tlpn 'sport = :80 or sport = :8080'
+
+# 3. Lister toutes les connexions TCP etablies vers ou depuis un noeud precis
+ss -tpn state established dst 192.168.4.101
+
+# 4. Compter le nombre global de sockets par etat (resume statistique)
+ss -s
+
+# 5. Inspecter les files d'attente (Recv-Q / Send-Q) et les timers TCP (-o -i)
+ss -tpno state established
+
+# 6. Filtrer les connexions bloquees en CLOSE-WAIT ou SYN-RECV
+ss -tan state close-wait
+ss -tan state syn-recv
+
+```
+
+*Interprétation des colonnes `Recv-Q` et `Send-Q` sur une socket en état `LISTEN` :*
+
+* **`Send-Q` :** Taille maximale de la file d'attente de connexions configurée par l'application (*listen backlog*).
+
+* **`Recv-Q` :** Nombre actuel de connexions entrantes ayant terminé le handshake TCP mais qui n'ont pas encore été acceptées (`accept()`) par les processus *workers* de l'application. Si `Recv-Q` atteint `Send-Q`, l'application est saturée et les nouvelles connexions clientes sont rejetées.
+
+### 4.2 Inspection des descripteurs ouverts avec `lsof`
+
+Sous Linux, chaque socket réseau est représentée par un descripteur de fichier en mémoire. L'outil **`lsof`** (*List Open Files*) permet de croiser les processus, les fichiers et les connexions réseau :
+
+```
+# 1. Lister tous les fichiers et sockets reseau ouverts sur le port TCP 80
+lsof -nP -iTCP:80
+
+# 2. Lister uniquement les sockets TCP en etat d'ecoute (LISTEN)
+lsof -nP -iTCP -sTCP:LISTEN
+
+# 3. Afficher toutes les ressources reseau ouvertes par un processus precis (via son PID)
+lsof -nP -a -p <PID> -i
+
+# 4. Afficher tous les descripteurs ouverts par un utilisateur systeme (ex: nginx)
+lsof -u nginx
+
+```
+
+### 4.3 Tests actifs de connectivité transport (`nc` et `curl`)
+
+Pour vérifier depuis le Master si un port distant répond avant d'incriminer la couche applicative :
+
+```
+# 1. Tester l'ouverture d'un port TCP distant avec netcat (timeout de 2 secondes)
+nc -zv -w 2 192.168.4.101 80
+
+# 2. Mesurer le detail des temps de connexion avec curl (TCP connect vs Reponse HTTP)
+curl -s -o /dev/null -w "Connect: %{time_connect}s | TTFB: %{time_starttransfer}s | HTTP: %{http_code}\n" http://192.168.4.101
+
+```
+
+## Synthèse : Interprétation des symptômes de connexion TCP
+
+| Symptôme observé côté client | Comportement réseau sous-jacent | Causes probables à vérifier |
+| :---- | :---- | :---- |
+| **`Connection refused` (immédiat)** | Réception immédiate d'un paquet TCP `RST` (Reset) depuis la cible. | 1\. Le service est arrêté.<br>2\. Le service écoute sur `127.0.0.1` au lieu de `0.0.0.0` (`ss -tlpn`).<br>3\. Le service écoute sur un autre port.<br>4\. Pare-feu configuré en mode `REJECT`. |
+| **`Connection timed out` (après délai)** | Aucun paquet `SYN-ACK` ni `RST` reçu suite à l'envoi du `SYN`. | 1\. Pare-feu configuré en mode `DROP` silencieux.<br>2\. Route manquante ou erronée à l'aller ou au retour (`ip route get`).<br>3\. Machine cible éteinte ou isolée. |
+| **`No route to host`** | Réception d'un message ICMP `Host Unreachable` ou échec ARP (`FAILED`). | 1\. Adresse IP absente du segment local (`ip neigh`).<br>2\. Passerelle injoignable ou table de routage incomplète. |
+
+&nbsp;

@@ -1,0 +1,208 @@
+# Analyse de la charge système en temps réel (CPU, RAM, I/O)
+
+## 1\. Comprendre la charge système sous Linux
+
+Lorsqu'une alerte de supervision signale un ralentissement applicatif ou une élévation du *Load Average*, l'administrateur doit déterminer quelle ressource matérielle constitue le goulet d'étranglement : le processeur (CPU), la mémoire vive (RAM / Swap) ou le sous-système de stockage (I/O disque).
+
+### 1.1 Le *Load Average* (Charge moyenne)
+
+Affiché par les commandes `uptime`, `w` ou `top`, le *Load Average* est composé de trois valeurs numériques (ex: `2.45, 1.80, 0.95`) représentant la moyenne exponentielle mobile sur **1 minute**, **5 minutes** et **15 minutes**.
+
+Contrairement à d'autres systèmes UNIX où le *Load Average* ne mesure que les processus attendant le processeur, sous Linux cette valeur comptabilise la somme des tâches dans deux états :
+
+1. **État `R` (*Running / Runnable*) :** Processus en cours d'exécution sur un cœur CPU ou prêts à s'exécuter dans la file d'attente de l'ordonnanceur (*run queue*).
+
+2. **État `D` (*Uninterruptible Sleep*) :** Processus bloqués dans le noyau en attente de la fin d'une opération d'entrée/sortie matérielle synchrone (lecture/écriture sur un disque local saturé ou partage NFS ne répondant plus).
+
+L'interprétation du *Load Average* dépend directement du nombre de cœurs logiques (vCPU) présents sur le serveur (`nproc` ou `lscpu`) :
+
+$$\text{Ratio de saturation} = \frac{\text{Load Average}}{\text{Nombre de vCPU}}$$
+
+* Si le ratio est $<1$ : Les tâches sont traitées sans délai d'attente.
+
+* Si le ratio est $>1$ : Une file d'attente s'est formée. Il faut alors inspecter la répartition du temps processeur pour savoir s'il s'agit d'une saturation de calcul CPU (`%us` / `%sy`) ou d'un blocage disque (`%wa`).
+
+### 1.2 Répartition des états du processeur
+
+Le temps processeur est divisé en plusieurs compteurs exprimés en pourcentage :
+
+* **`us` (*user*) :** Temps passé à exécuter du code applicatif en espace utilisateur (calculs, chiffrement, compression, requêtes web).
+
+* **`sy` (*system*) :** Temps passé dans l'espace noyau (appels système, gestion des sockets réseau, création de processus `fork`).
+
+* **`id` (*idle*) :** Temps d'inactivité du processeur (aucune tâche à exécuter ni aucune entrée/sortie en attente).
+
+* **`wa` (*iowait*) :** Temps durant lequel le processeur est inactif **uniquement parce qu'il attend la fin d'une opération d'entrée/sortie disque**. Un `%wa` élevé (ex: $> 25\%$) indique que les disques saturent alors que le CPU a la capacité de travailler.
+
+* **`st` (*steal time*) :** En environnement virtualisé (KVM, VMware, Cloud), pourcentage de temps pendant lequel l'hyperviseur physique a réquisitionné le processeur pour d'autres machines virtuelles voisines.
+
+## 2\. Diagnostic de la mémoire virtuelle et du CPU avec `vmstat`
+
+L'outil **`vmstat`** (*Virtual Memory Statistics*, fourni par le paquet `procps-ng`) offre une synthèse immédiate de l'activité des processus, de la mémoire, du swap, des blocs disques et du processeur sans surcharger la machine.
+
+### 2.1 Mode d'échantillonnage périodique
+
+La syntaxe `vmstat <intervalle_sec> <nombre_mesures>` affiche une ligne d'état toutes les $n$ secondes :
+
+```
+vmstat 1 5
+
+```
+
+**Règle d'analyse essentielle :** La toute première ligne affichée par `vmstat` (ainsi que par `iostat`) ne reflète pas l'état actuel, mais une **moyenne globale calculée depuis le dernier démarrage du serveur**. Pour analyser un incident en temps réel, il faut systématiquement ignorer la première ligne et lire à partir de la deuxième ligne.
+
+### 2.2 Lecture des colonnes critiques de `vmstat`
+
+| Groupe | Colonne | Signification et interprétation en diagnostic |
+| :---- | :---- | :---- |
+| **`procs`** | **`r`** | Nombre de processus en exécution ou en attente de CPU (état `R`). Si `r` dépasse durablement le nombre de vCPU, le CPU est saturé. |
+| **`procs`** | **`b`** | Nombre de processus bloqués en sommeil ininterruptible (état `D`, attente I/O). |
+| **`memory`** | `swpd`, `free`, `buff`, `cache` | Mémoire swap utilisée, RAM libre, tampons et cache disque. |
+| **`swap`** | **`si` / `so`** | *Swap In* (disque $\rightarrow$ RAM) et *Swap Out* (RAM $\rightarrow$ disque) en Ko/s. Si `si` et `so` sont constamment supérieurs à 0, le serveur manque de RAM et subit du *thrashing*. |
+| **`io`** | `bi` / `bo` | Blocs reçus depuis un disque (*blocks in*, lecture) et envoyés vers un disque (*blocks out*, écriture). |
+| **`system`** | `in` / `cs` | Interruptions matérielles par seconde (`in`) et changements de contexte processeur (`cs`). |
+| **`cpu`** | `us`, `sy`, `id`, **`wa`**, `st` | Répartition en pourcentage du temps processeur sur l'intervalle écoulé. |
+
+### 2.3 Mémoire libre (`free`) vs Mémoire disponible (`available`)
+
+Sous Linux, le noyau utilise automatiquement la mémoire vive non allouée pour mettre en cache les blocs de fichiers lus sur le disque (`buff/cache`), afin d'accélérer les accès futurs. Dès qu'une application réclame de la mémoire, ce cache est libéré instantanément.
+
+Dans la sortie de la commande `free -m`, la colonne `free` peut donc être très basse sur un serveur parfaitement sain. L'indicateur réel de mémoire utilisable sans recourir au swap est la colonne **`available`**.
+
+## 3\. Diagnostic des entrées/sorties disque (`iostat` et `iotop`)
+
+Lorsque `vmstat` révèle une colonne `b` supérieure à zéro et un pourcentage `wa` (*iowait*) élevé, l'investigation s'oriente vers le stockage bloc.
+
+### 3.1 Analyse des périphériques blocs avec `iostat`
+
+Fourni par le paquet **`sysstat`**, l'utilitaire **`iostat`** mesure les performances de chaque disque physique ou volume logique LVM. L'appel standard en diagnostic utilise les options `-x` (statistiques étendues), `-z` (masquer les disques inactifs) et `-m` (afficher les débits en Mo/s) :
+
+```
+iostat -xzm 1 5
+
+```
+
+Les indicateurs clés par périphérique sont :
+
+* **`r/s` et `w/s` :** Nombre de requêtes de lecture et d'écriture par seconde (IOPS).
+
+* **`rMB/s` et `wMB/s` :** Débit de transfert en lecture et écriture (en Mo par seconde).
+
+* **`r_await` et `w_await` (ou `await`) :** Temps de réponse moyen (en millisecondes) d'une opération d'entrée/sortie, incluant le temps passé dans la file d'attente du noyau et le temps de traitement par le disque physique. Sur un SSD/NVMe local, `await` doit être $< 2\text{ ms}$ ; au-delà de $15\text{ à }20\text{ ms}$, le stockage ralentit les applications.
+
+* **`aqu-sz` (*Average Queue Size*) :** Nombre moyen de requêtes en attente dans la file du périphérique.
+
+* **`%util` :** Pourcentage de temps durant lequel le périphérique a eu au moins une requête en cours de traitement. Sur un disque magnétique ou un volume virtuel simple, une valeur proche de `100%` indique la saturation de la bande passante du disque.
+
+### 3.2 Identification du processus responsable avec `iotop` et `pidstat`
+
+`iostat` identifie **quel disque** est saturé, mais n'indique pas **quel processus** génère ces accès. Deux outils permettent d'isoler le PID responsable :
+
+1. **`iotop` :** Équivalent de `top` dédié aux accès disques. Il interroge le noyau pour afficher en temps réel les débits de lecture (`DISK READ`) et d'écriture (`DISK WRITE`) par processus ou thread.
+
+   * L'option **`-o`** (*only*) affiche uniquement les processus effectuant réellement des accès disques à l'instant présent.  
+   * Les options **`-b -n 3`** permettent une exécution non interactive (mode *batch*) utilisable à distance via SSH ou Ansible.  
+2. **`pidstat -d` (suite `sysstat`) :** Alternative légère en ligne de commande qui affiche les statistiques de lecture/écriture (`kB_rd/s`, `kB_wr/s`) et le délai d'attente I/O (`iodelay`) par PID sans interface plein écran :
+
+```
+# Afficher toutes les secondes pendant 3 cycles les processus generant des I/O disque
+pidstat -d 1 3
+
+```
+
+## 4\. Mémo technique opérationnel
+
+Cette section regroupe l'installation des outils de diagnostic temps réel et les commandes d'investigation et de régulation de priorité des processus (`nice`, `renice`, `ionice`).
+
+### 4.1 Installation des utilitaires d'analyse temps réel
+
+```
+# Sous Rocky Linux 9 / RHEL 9 (nmon nécessite le dépôt EPEL)
+dnf install -y epel-release
+dnf install -y procps-ng sysstat iotop nmon psmisc
+
+# Sous Debian 12 / Ubuntu
+apt update
+apt install -y procps sysstat iotop nmon psmisc
+
+```
+
+### 4.2 Tableau de bord synthétique avec `nmon`
+
+L'outil **`nmon`** (*Nigel's Monitor*) permet de visualiser simultanément plusieurs sous-systèmes dans un seul terminal interactif en activant des volets par raccourcis clavier :
+
+* Touche **`c`** : Utilisation détaillée de chaque cœur CPU.
+
+* Touche **`m`** : État de la mémoire vive et du Swap.
+
+* Touche **`d`** : Activité et taux d'occupation des disques.
+
+* Touche **`n`** : Débits et erreurs sur les interfaces réseau.
+
+* Touche **`t`** : Liste des processus les plus consommateurs (*Top processes*).
+
+* Touche **`q`** : Quitter l'application.
+
+### 4.3 Commandes de diagnostic rapide par ressource
+
+```
+# 1. Vue globale : temps reel mémoire, swap, I/O et CPU (1 mesure par seconde, 5 fois)
+vmstat 1 5
+
+# 2. Identifier les 5 processus consommant le plus de CPU (sans interface interactive)
+ps -eo pid,ppid,user,stat,pcpu,pmem,comm --sort=-pcpu | head -n 6
+
+# 3. Identifier les 5 processus consommant le plus de mémoire RAM
+ps -eo pid,ppid,user,stat,pcpu,pmem,rss,comm --sort=-rss | head -n 6
+
+# 4. Lister uniquement les processus bloqués en attente d'I/O disque (Etat D)
+ps -eo pid,user,stat,wchan:24,comm | awk '$3 ~ /^D/ {print}'
+
+# 5. Mesurer la latence (await) et la saturation (%util) des disques
+iostat -xzm 1 3
+
+# 6. Identifier en mode non interactif le processus qui sature le disque
+iotop -obP -n 3 -d 1
+# (ou avec pidstat)
+pidstat -d 1 3
+
+# 7. Détecter les fuites ou saturations mémoire par processus
+pidstat -r 1 3
+
+```
+
+### 4.4 Régulation de priorité à chaud (`renice` et `ionice`)
+
+Lorsqu'un traitement légitime en arrière-plan (sauvegarde, compression d'archive, indexation) dégrade les temps de réponse d'un serveur en production mais ne doit pas être tué brutalement, l'administrateur abaisse sa priorité d'ordonnancement :
+
+1. **Priorité processeur (`nice` / `renice`) :** La valeur de *niceness* s'étend de **`-20`** (priorité maximale) à **`+19`** (priorité minimale, le processus ne reçoit du CPU que si personne d'autre n'en demande).
+
+```
+# Abaisser au minimum (+19) la priorite CPU d'un processus deja en cours via son PID
+renice -n 19 -p <PID>
+
+```
+
+2. **Priorité d'accès disque (`ionice`) :** L'ordonnanceur d'entrées/sorties supporte trois classes :  
+   * Classe **`1` (*Realtime*)** : Accès prioritaire absolu au disque.  
+   * Classe **`2` (*Best-effort*)** : Classe par défaut (niveaux de priorité `0` à `7`).  
+   * Classe **`3` (*Idle*)** : Le processus n'effectue ses lectures/écritures disques que lorsqu'aucun autre programme ne sollicite le stockage.
+
+```
+# Basculer un processus d'ecriture disque gourmand dans la classe Idle (3)
+ionice -c 3 -p <PID>
+
+# Vérifier la classe d'ordonnancement I/O actuelle d'un PID
+ionice -p <PID>
+
+```
+
+## Synthèse : Arbre d'interprétation des métriques temps réel
+
+| Symptôme dans `vmstat 1 5` | Outil de confirmation | Cause racine identifiée |
+| :---- | :---- | :---- |
+| Colonne **`r` \> nombre de vCPU** et **`us` \+ `sy` $\approx$ 100%** (`wa` faible) | `ps --sort=-pcpu` ou `pidstat -u 1 3` | **Saturation CPU :** Un ou plusieurs processus consomment toute la puissance de calcul. |
+| Colonne **`b` $\geq$ 1** et **`wa` \> 25%** (`id` et `us` faibles) | `iostat -xzm 1 3` puis `iotop -obP -n 3` (ou `pidstat -d 1 3`) | **Goulet d'étranglement I/O Disque :** Un processus sature la bande passante ou les IOPS du disque. |
+| Colonnes **`si` \> 0** et **`so` \> 0** en continu avec **`wa` élevé** | `free -m` et `ps --sort=-rss` | **Saturation RAM (*Thrashing*) :** La mémoire vive est épuisée (`available` $\approx 0$), le noyau pagine en continu sur le disque de swap. |
+
+&nbsp;

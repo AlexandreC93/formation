@@ -1,0 +1,179 @@
+# TP : Supervision d'infrastructure avec Nagios Core 4 et agents NRPE
+
+## 1\. Objectifs
+
+Vous êtes chargé de déployer la plateforme centrale de supervision de l'infrastructure basée sur **Nagios Core 4** et ses agents distants **NRPE** (*Nagios Remote Plugin Executor*).
+
+| Hôte | Adresse IP | Rôle dans l'infrastructure | Composants à installer et configurer |
+| :---- | :---- | :---- | :---- |
+| **Master** | `192.168.4.100` | Serveur central Nagios & Contrôleur Ansible | Serveur `nagios`, serveur web Apache, `check_nrpe` |
+| **node1** | `192.168.4.101` | Serveur Web Production 1 | Agent `nrpe`, plugins officiels, ouverture port TCP `5666` |
+| **node2** | `192.168.4.102` | Serveur Web Production 2 | Agent `nrpe`, plugins officiels, ouverture port TCP `5666` |
+
+Le déploiement et la configuration des agents NRPE sur `node1` et `node2` doivent être réalisés de manière automatisée depuis le **Master** via un playbook Ansible dans le répertoire `~/tp-nagios/`.
+
+## 2\. Installation du serveur Nagios Core sur le Master
+
+### 2.1 Installation des paquets et configuration du serveur Web
+
+1. Créez le répertoire de travail `~/tp-nagios/` sur le Master et copiez-y vos fichiers `ansible.cfg` et `inventory.ini` :
+
+```
+mkdir -p ~/tp-nagios
+cd ~/tp-nagios
+cp ~/tp-ansible/ansible.cfg ~/tp-ansible/inventory.ini .
+
+```
+
+2. Installez le moteur Nagios Core, les plugins officiels, le plugin client `check_nrpe` et le serveur web Apache sur le Master (en vous référant à la section 4.1 du support de cours selon votre distribution Rocky Linux 9 ou Debian 12).
+
+3. Créez le compte d'administration web **`nagiosadmin`** avec le mot de passe `NagiosMaster#2026` à l'aide de la commande `htpasswd -bc`.
+
+4. Attribuez les permissions `0640` et le groupe du serveur web (`apache` sous Rocky Linux, `www-data` sous Debian) au fichier de mots de passe généré.
+
+5. Autorisez le flux HTTP dans le pare-feu local du Master si celui-ci est actif, puis activez et démarrez les services du serveur web et de Nagios.
+
+### 2.2 Vérification de l'accès à l'interface Web
+
+Testez localement la réponse de l'interface web avec `curl` :
+
+```
+# Sous Rocky Linux 9 :
+curl -s -I -u nagiosadmin:NagiosMaster#2026 http://127.0.0.1/nagios/ | head -n 1
+
+# Sous Debian 12 :
+curl -s -I -u nagiosadmin:NagiosMaster#2026 http://127.0.0.1/nagios4/ | head -n 1
+
+```
+
+Le serveur doit retourner un code `HTTP/1.1 200 OK`.
+
+## 3\. Déploiement automatisé des agents NRPE via Ansible
+
+### 3.1 Conception du playbook `deploy_nrpe.yml`
+
+Rédigez un playbook `~/tp-nagios/deploy_nrpe.yml` ciblant le groupe `production_nodes` avec élévation de privilèges (`become: true`) pour effectuer les opérations suivantes :
+
+1. **Installation des paquets :** Installer le démon serveur NRPE et la collection de plugins standards (`epel-release`, `nrpe` et `nagios-plugins-all` sous Rocky Linux ; ou `nagios-nrpe-server` et `monitoring-plugins` sous Debian).
+
+2. **Sécurisation du démon (`/etc/nagios/nrpe.cfg`) :**
+
+   * Modifier la directive `allowed_hosts` pour autoriser uniquement `127.0.0.1,::1,192.168.4.100`.
+
+   * Fixer la directive `dont_blame_nrpe=0` afin d'interdire le passage d'arguments dynamiques depuis le réseau.
+
+3. **Déclaration des commandes locales (`/etc/nagios/nrpe.d/mco_commands.cfg`) :** Déployer le fichier de configuration définissant les 4 contrôles locaux suivants (en adaptant le chemin `/usr/lib64/nagios/plugins` ou `/usr/lib/nagios/plugins` selon l'OS des nœuds) :
+
+   * `check_disk_root` : contrôle de la partition `/` avec `-w 20% -c 10% -p /`.
+
+   * `check_load_cpu` : contrôle de la charge processeur avec `-r -w 5.0,4.0,3.0 -c 10.0,8.0,6.0`.
+
+   * `check_proc_nginx` : vérification de la présence d'au moins un processus `nginx` (`-c 1: -C nginx`).
+
+   * `check_total_procs` : contrôle du nombre total de processus (`-w 250 -c 400`).
+
+4. **Ouverture du pare-feu et activation du service :**
+
+   * Autoriser le port TCP `5666` dans le pare-feu des nœuds pour l'adresse IP du Master (`192.168.4.100`).
+
+   * Démarrer et activer le service `nrpe` (ou `nagios-nrpe-server`) au démarrage, et prévoir un *handler* de redémarrage en cas de modification de la configuration.
+
+### 3.2 Exécution et qualification unitaire en CLI
+
+1. Exécutez votre playbook `ansible-playbook deploy_nrpe.yml` et vérifiez son idempotence lors d'un second lancement.
+
+2. Depuis le Master, validez la communication TLS et l'exécution distante de chaque sonde sur `node1` et `node2` :
+
+```
+# Detection automatique du binaire check_nrpe sur le Master
+CHECK_NRPE=$(command -v check_nrpe || ls /usr/lib*/nagios/plugins/check_nrpe | head -n 1)
+
+# 1. Verification de la version de l'agent distant
+$CHECK_NRPE -H 192.168.4.101
+$CHECK_NRPE -H 192.168.4.102
+
+# 2. Execution unitaire des 4 commandes declarees sur node1
+$CHECK_NRPE -H 192.168.4.101 -c check_disk_root
+echo "Code retour : $?"
+
+$CHECK_NRPE -H 192.168.4.101 -c check_load_cpu
+$CHECK_NRPE -H 192.168.4.101 -c check_proc_nginx
+$CHECK_NRPE -H 192.168.4.101 -c check_total_procs
+
+```
+
+Chaque commande doit renvoyer une ligne débutant par `DISK OK`, `OK - load average` ou `PROCS OK` ainsi qu'un code de sortie égal à `0`.
+
+## 4\. Modélisation des objets dans Nagios Core
+
+Sur le Master, vous allez déclarer les équipements et les services à surveiller dans le répertoire de configuration modulaire (`/etc/nagios/conf.d/` sous Rocky Linux ou `/etc/nagios4/conf.d/` sous Debian).
+
+1. Vérifiez dans le fichier principal `nagios.cfg` que la directive `cfg_dir` pointant vers ce dossier `conf.d` est bien active (non commentée).
+
+2. **Définition de la commande (`commands_mco.cfg`) :** Créez le fichier définissant la commande `check_nrpe` à l'aide de la macro `$USER1$/check_nrpe -H $HOSTADDRESS$ -c $ARG1$`.
+
+3. **Définition des hôtes et du groupe (`hosts_mco.cfg`) :**
+
+   * Déclarez les objets `host` pour `node1` (`192.168.4.101`) et `node2` (`192.168.4.102`) avec une cadence de vérification d'une minute (`check_interval 1`, `retry_interval 1`) et un seuil de confirmation à 3 essais (`max_check_attempts 3`).
+
+   * Déclarez le groupe `hostgroup` nommé `production-servers` regroupant `node1,node2`.
+
+4. **Définition des services (`services_mco.cfg`) :** Rattachez au groupe `production-servers` (`hostgroup_name production-servers`) les 5 services suivants :
+
+   * `Disponibilite HTTP Port 80` utilisant la sonde externe `check_http!-p 80`.
+
+   * `Espace Disque Racine` utilisant `check_nrpe!check_disk_root`.
+
+   * `Charge Processeur` utilisant `check_nrpe!check_load_cpu`.
+
+   * `Processus Nginx` utilisant `check_nrpe!check_proc_nginx`.
+
+   * `Nombre Total Processus` utilisant `check_nrpe!check_total_procs`.
+
+5. **Validation syntaxique et rechargement :** Exécutez le contrôle pré-vol du moteur Nagios :
+
+```
+# Sous Rocky Linux 9 :
+nagios -v /etc/nagios/nagios.cfg && systemctl reload nagios
+
+# Sous Debian 12 :
+nagios4 -v /etc/nagios4/nagios.cfg && systemctl reload nagios4
+
+```
+
+Le bilan de vérification doit afficher `Total Warnings: 0` et `Total Errors: 0`.
+
+## 5\. Simulation de panne et observation du cycle d'alerte (`SOFT` / `HARD`)
+
+1. Ouvrez un terminal sur le Master pour suivre en direct le journal d'événements de Nagios (`/var/log/nagios/nagios.log` ou `/var/log/nagios4/nagios.log`) :
+
+```
+tail -f /var/log/nagios*/nagios.log | grep -E "SERVICE ALERT|HOST ALERT"
+
+```
+
+2. Depuis un second terminal sur le Master, arrêtez volontairement le service `nginx` sur `node1` via Ansible :
+
+```
+ansible node1 -b -a "systemctl stop nginx"
+
+```
+
+3. Observez dans le journal Nagios les transitions successives des services `Disponibilite HTTP Port 80` et `Processus Nginx` sur `node1` :
+
+   * Relevez les deux premières tentatives en état transitoire : `CRITICAL;SOFT;1;` puis `CRITICAL;SOFT;2;`.
+
+   * Relevez la troisième tentative qui confirme la panne : `CRITICAL;HARD;3;`.
+
+4. Redémarrez le service `nginx` sur `node1` via Ansible (`ansible node1 -b -a "systemctl start nginx"`) et vérifiez l'apparition de l'événement de retour à la normale (`OK;HARD`).
+
+## Synthèse des livrables attendus
+
+| Élément contrôlé | Critère de validation |
+| :---- | :---- |
+| Playbook `~/tp-nagios/deploy_nrpe.yml` | Exécution sans erreur et idempotente (`changed=0` au second passage). |
+| Test CLI `check_nrpe` depuis le Master | Réponse `OK` (code retour `0`) sur les 4 commandes NRPE pour `node1` et `node2`. |
+| Validation pré-vol `nagios -v` | `Total Warnings: 0` et `Total Errors: 0`. |
+| Interface Web Nagios | `node1` et `node2` à l'état `UP`, et les 10 services associés à l'état `OK`. |
+
+&nbsp;

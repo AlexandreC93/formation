@@ -1,0 +1,181 @@
+# TP : Audit de performance historique avec sysstat, sar et pidstat
+
+## 1\. Contexte et objectifs de l'atelier
+
+Des ralentissements intermittents ont été signalés sur les serveurs de production au cours d'une séquence de traitement automatisée, mais les serveurs semblent revenus à un état calme au moment où vous intervenez.
+
+Pour diagnostiquer ces anomalies a posteriori et instrumenter durablement le parc, vous devez :
+
+1. Activer et vérifier les collecteurs automatiques `sysstat` (`sa1` / `sysstat-collect.timer`) sur l'ensemble des nœuds.
+
+2. Analyser une archive binaire d'incident (`/var/tmp/incident_record.sa`) sur `node1` et `node2` à l'aide de `sar -f` pour identifier à quelle seconde précise et sur quel sous-système matériel (CPU, RAM, I/O ou Réseau) la dégradation s'est produite.
+
+3. Utiliser `pidstat` pour corréler l'activité CPU, mémoire, disque et les changements de contexte par processus.
+
+4. Exporter les preuves techniques aux formats CSV, JSON et graphique vectoriel SVG à l'aide de `sadf`.
+
+Toutes les opérations sont pilotées depuis le **Master** (`192.168.4.100`) dans le répertoire `~/diagnostic-j3s4/`.
+
+## 2\. Préparation de l'environnement et génération des archives d'incident
+
+1. Créez le répertoire de travail `~/diagnostic-j3s4/` sur le Master et copiez-y votre configuration Ansible :
+
+```
+mkdir -p ~/diagnostic-j3s4
+cd ~/diagnostic-j3s4
+cp ~/tp-ansible/ansible.cfg ~/tp-ansible/inventory.ini .
+
+```
+
+2. Créez et exécutez le script suivant depuis le Master. Ce script active la collecte `sysstat` et génère sur `node1` et `node2` une archive binaire `/var/tmp/incident_record.sa` (d'une durée de 12 secondes) enregistrant une anomalie transitoire au milieu de la capture :
+
+```
+cat << 'EOF' > ~/diagnostic-j3s4/inject_j3s4.sh
+#!/bin/bash
+set -e
+
+echo "[+] Preparation de la collecte sysstat et enregistrement des incidents (env. 15s)..."
+
+# 1. Sur node1 : capture sar de 12s avec un pic de calcul CPU et allocation RAM entre t+3s et t+8s
+ansible node1 -b -m ansible.builtin.shell -a '
+  rm -f /var/tmp/incident_record.sa
+  sar -o /var/tmp/incident_record.sa 1 12 >/dev/null 2>&1 &
+  SAR_PID=$!
+  sleep 3
+  timeout 5 sha512sum /dev/zero >/dev/null 2>&1 &
+  timeout 5 python3 -c "a = bytearray(250 * 1024 * 1024); import time; time.sleep(5)" 2>/dev/null &
+  wait $SAR_PID || true
+'
+
+# 2. Sur node2 : capture sar de 12s avec un pic d ecritures disques et trafic reseau entre t+3s et t+8s
+ansible node2 -b -m ansible.builtin.shell -a '
+  rm -f /var/tmp/incident_record.sa
+  sar -o /var/tmp/incident_record.sa 1 12 >/dev/null 2>&1 &
+  SAR_PID=$!
+  sleep 3
+  for i in 1 2 3 4; do
+    dd if=/dev/zero of=/var/tmp/sar_burst.dat bs=4M count=32 conv=fdatasync status=none 2>/dev/null
+    ping -i 0.01 -c 80 -s 1400 127.0.0.1 >/dev/null 2>&1 || true
+  done
+  rm -f /var/tmp/sar_burst.dat
+  wait $SAR_PID || true
+'
+
+echo "[OK] Archives binaires /var/tmp/incident_record.sa generees sur node1 et node2."
+EOF
+
+chmod +x ~/diagnostic-j3s4/inject_j3s4.sh
+~/diagnostic-j3s4/inject_j3s4.sh
+
+```
+
+## 3\. Cahier des charges
+
+### 3.1 Activation et audit de la collecte périodique `sysstat`
+
+Avant d'analyser les archives d'incident, assurez-vous que la collecte périodique standard est opérationnelle sur `node1` et `node2` :
+
+1. **Activation du service et des timers :**
+
+   * Sous Debian / Ubuntu, assurez-vous que `ENABLED="true"` est configuré dans `/etc/default/sysstat`.
+
+   * Activez et démarrez les unités `sysstat.service` et `sysstat-collect.timer` sur les deux nœuds via Ansible.
+
+   * Vérifiez la planification active du timer avec `systemctl list-timers sysstat*`.
+
+2. **Alimentation de l'archive journalière :**
+
+   * Déclenchez manuellement trois échantillons espacés d'une seconde dans l'archive officielle du jour (`/var/log/sa/saDD` ou `/var/log/sysstat/saDD`) en appelant le collecteur `sa1 1 3` :
+
+```
+ansible production_nodes -b -m ansible.builtin.shell -a "/usr/lib64/sa/sa1 1 3 2>/dev/null || /usr/lib/sysstat/sa1 1 3"
+
+```
+
+* Vérifiez que la commande `LC_ALL=C sar -u` (exécutée sans l'option `-f`) affiche bien les mesures du jour courant sur `node1` et `node2`.
+
+### 3.2 Investigation post-mortem de l'archive sur `node1`
+
+Sur `node1`, les serveurs sont actuellement au repos, mais le fichier binaire `/var/tmp/incident_record.sa` contient l'enregistrement de l'incident survenu précédemment. À l'aide de commandes Ansible exécutant `LC_ALL=C sar ... -f /var/tmp/incident_record.sa` :
+
+1. **Analyse processeur et file d'attente (`-u` et `-q`) :**
+
+   * Inspectez l'historique CPU (`sar -u -f /var/tmp/incident_record.sa`) et l'historique de la file d'exécution (`sar -q -f /var/tmp/incident_record.sa`).
+
+   * Relevez l'heure exacte de début et de fin du pic d'activité `%user`, ainsi que la valeur maximale atteinte par `runq-sz`.
+
+2. **Analyse mémoire vive et pagination (`-r` et `-W`) :**
+
+   * Inspectez l'évolution de la mémoire vive (`sar -r -f /var/tmp/incident_record.sa`) et du swap (`sar -W -f /var/tmp/incident_record.sa`).
+
+   * Calculez de combien de mégaoctets (environ) la mémoire disponible (`kbavail`) a chuté au plus fort de l'anomalie par rapport à la première seconde de la capture, et vérifiez si le serveur a eu recours au swap (`pswpin/s`, `pswpout/s`).
+
+3. **Vérification des disques (`-b`) :**
+
+   * Inspectez `sar -b -f /var/tmp/incident_record.sa` pour confirmer que le stockage disque n'était pas en cause sur `node1`.
+
+### 3.3 Investigation post-mortem de l'archive sur `node2`
+
+Interrogez maintenant l'archive `/var/tmp/incident_record.sa` présente sur `node2` :
+
+1. **Analyse processeur (`-u`) :**
+
+   * Exécutez `LC_ALL=C sar -u -f /var/tmp/incident_record.sa` sur `node2` et relevez le comportement de la colonne `%iowait` pendant la fenêtre d'incident.  
+2. **Analyse des transactions et des périphériques blocs (`-b` et `-d -p`) :**
+
+   * Exécutez `LC_ALL=C sar -b -f /var/tmp/incident_record.sa` pour relever le débit maximal d'écriture en blocs par seconde (`bwrtn/s`) et le nombre de transactions par seconde (`tps`).
+
+   * Exécutez `LC_ALL=C sar -d -p -f /var/tmp/incident_record.sa` pour identifier le nom du disque impacté, son temps d'attente moyen (`await`) et son pourcentage d'occupation (`%util`).
+
+3. **Analyse du trafic réseau (`-n DEV` et `-n EDEV`) :**
+
+   * Exécutez `LC_ALL=C sar -n DEV -f /var/tmp/incident_record.sa` et `LC_ALL=C sar -n EDEV -f /var/tmp/incident_record.sa`.
+
+   * Identifiez sur quelle interface réseau un pic de paquets (`rxpck/s`, `txpck/s`) et de débit (`rxkB/s`, `txkB/s`) a eu lieu simultanément aux écritures disques, et vérifiez l'absence de paquets perdus (`rxdrop/s`).
+
+### 3.4 Profilage par processus (`pidstat`) et exportation (`sadf`)
+
+1. **Audit multi-ressources avec `pidstat` :**
+
+   * Exécutez sur le groupe `production_nodes` une commande `pidstat` combinant l'analyse CPU (`-u`), mémoire (`-r`), disque (`-d`) et changements de contexte (`-w`) pour les processus `nginx` et `sshd` :
+
+```
+ansible production_nodes -b -a "pidstat -urdw -C 'nginx|sshd' 1 2"
+
+```
+
+2. **Conversion et génération de rapports avec `sadf` :**
+
+   * Sur `node1`, convertissez les données CPU et mémoire de l'archive `/var/tmp/incident_record.sa` au format **CSV** dans `/var/tmp/rapport_node1.csv` (`sadf -d ... -- -u -r`).
+
+   * Sur `node2`, convertissez les statistiques disques et réseau de l'archive `/var/tmp/incident_record.sa` au format **JSON** dans `/var/tmp/rapport_node2.json` (`sadf -j ... -- -b -n DEV`), et générez un graphique **SVG** dans `/var/tmp/graphe_node2.svg` (`sadf -g ... -- -u -b`).
+
+   * Rapatriez ces trois fichiers sur le Master dans votre dossier `~/diagnostic-j3s4/` à l'aide du module Ansible `ansible.builtin.fetch` (avec `flat: true`).
+
+## 4\. Critères de validation
+
+Exécutez les commandes suivantes depuis le Master pour valider l'ensemble de l'atelier :
+
+```
+# 1. Verification de l'activation du timer sysstat sur les deux noeuds
+ansible production_nodes -a "systemctl is-active sysstat-collect.timer"
+
+# 2. Verification du fonctionnement de sar sur l'archive journaliere officielle
+ansible production_nodes -a "LC_ALL=C sar -u 1 1"
+
+# 3. Verification de la presence et du contenu des exports rapatries sur le Master
+ls -lh ~/diagnostic-j3s4/rapport_node1.csv ~/diagnostic-j3s4/rapport_node2.json ~/diagnostic-j3s4/graphe_node2.svg
+head -n 5 ~/diagnostic-j3s4/rapport_node1.csv
+
+```
+
+## Synthèse des livrables attendus
+
+| Élément contrôlé | Résultat attendu |
+| :---- | :---- |
+| Collecte automatique `sysstat` | Timer `sysstat-collect.timer` actif sur `node1` et `node2`, archive du jour lisible par `sar`. |
+| Diagnostic `node1` (`sar -f`) | Identification du créneau de pic `%user` (`-u`) et de la baisse temporaire de `kbavail` (`-r`). |
+| Diagnostic `node2` (`sar -f`) | Identification du pic d'écriture `bwrtn/s` (`-b`), du `%util` disque (`-d -p`) et du flux réseau (`-n DEV`). |
+| Rapports exportés (`sadf`) | Fichiers `rapport_node1.csv`, `rapport_node2.json` et `graphe_node2.svg` présents dans `~/diagnostic-j3s4/`. |
+
+&nbsp;

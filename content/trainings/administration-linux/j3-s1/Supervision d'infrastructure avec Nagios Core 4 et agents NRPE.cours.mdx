@@ -1,0 +1,312 @@
+# Supervision d'infrastructure avec Nagios Core 4 et agents NRPE
+
+## 1\. Architecture de supervision et ordonnancement
+
+Le diagnostic réactif intervient lorsqu'une panne a déjà impacté les utilisateurs. La supervision proactive vise à détecter les dérives de ressources (saturation d'une partition, augmentation de la charge processeur, arrêt d'un processus) et à alerter les équipes d'exploitation avant l'interruption de service.
+
+On distingue deux approches complémentaires dans la surveillance des serveurs :
+
+* **La supervision d'état et d'alerte (Nagios Core, Icinga, Centreon) :** Exécute périodiquement des contrôles unitaires sur les hôtes et les services, évalue leur état de santé selon des seuils définis et gère le cycle de notification d'astreinte.
+
+* **La métrologie temporelle (Prometheus, InfluxDB, Grafana) :** Collecte et stocke en continu des séries de valeurs numériques horodatées (*Time-Series*) pour analyser les tendances et tracer des graphiques de performance.
+
+### 1.1 Découplage entre le moteur Nagios et les plugins
+
+Nagios Core ne contient aucun code interne capable de tester un serveur web, d'interroger une base de données ou de mesurer un espace disque. Son architecture repose sur une séparation stricte des rôles :
+
+1. **L'ordonnanceur (`nagios`) :** Planifie les contrôles dans le temps, exécute les plugins externes, analyse leurs codes de retour, maintient la machine à états des équipements et déclenche les notifications.
+
+2. **Les plugins (`/usr/lib64/nagios/plugins/` ou `/usr/lib/nagios/plugins/`) :** Ce sont des exécutables autonomes (binaires compilés C ou scripts) appelés par le moteur. Ils effectuent la vérification technique et renvoient deux éléments à Nagios : une ligne de texte sur la sortie standard (`stdout`) et un code de sortie shell (`exit code`).
+
+| Code de sortie (`$?`) | État Nagios | Interprétation opérationnelle |
+| :---- | :---- | :---- |
+| **`0`** | **`OK`** | La ressource auditée fonctionne dans les seuils normaux. |
+| **`1`** | **`WARNING`** | Seuil d'avertissement franchi ; action préventive requise. |
+| **`2`** | **`CRITICAL`** | Panne avérée ou seuil critique dépassé ; intervention requise. |
+| **`3`** | **`UNKNOWN`** | Incapacité d'évaluer l'état (erreur d'argument, syntaxe ou délai). |
+
+### 1.2 États transitoires (`SOFT`) et états confirmés (`HARD`)
+
+Pour éviter d'envoyer de fausses alertes lors d'une micro-coupure réseau ou d'un pic d'activité bref, Nagios implémente un mécanisme de filtrage basé sur un compteur d'essais (`max_check_attempts`) :
+
+* **État `SOFT` :** Lorsqu'un contrôle passe pour la première fois de `OK` à `WARNING` ou `CRITICAL` (essai `1/3`), le service entre en état `SOFT`. Nagios accélère alors la fréquence de vérification (`retry_interval` au lieu de `check_interval`) mais **n'envoie aucune notification**.
+
+* **État `HARD` :** Si le contrôle échoue toujours lors de la dernière tentative configurée (essai `3/3`), l'état devient confirmé (`HARD`). Le moteur exécute alors les actions de notification (envoi d'e-mail, ticket ou webhook).
+
+## 2\. Supervision sans agent et agent distant NRPE
+
+### 2.1 Contrôles externes sans agent (*Agentless*)
+
+Depuis le serveur central Nagios, les plugins standards (`check_icmp`, `check_http`, `check_ssh`, `check_tcp`) permettent d'interroger directement les services exposés sur le réseau.
+
+Cependant, ces contrôles externes ne peuvent pas inspecter les métriques internes privées d'un serveur distant, telles que le taux d'occupation des partitions locales, la charge processeur (`load average`), la mémoire libre ou la présence d'un démon n'écoutant pas sur le réseau (ex: `crond` ou `rsyslogd`).
+
+### 2.2 Fonctionnement de l'agent NRPE (*Nagios Remote Plugin Executor*)
+
+Pour contrôler les ressources internes des nœuds managés, on installe sur chaque cible un démon léger nommé **`nrpe`** (`nagios-nrpe-server`) ainsi que la collection de plugins locaux :
+
+1. Le serveur central Nagios exécute le plugin client `check_nrpe` en lui indiquant l'adresse IP du nœud cible et le nom de la commande à lancer (ex: `check_disk_root`).
+
+2. La requête est transmise via une connexion chiffrée TLS sur le port **TCP 5666** jusqu'au démon NRPE du nœud cible.
+
+3. Le démon NRPE vérifie que l'adresse IP du serveur Nagios est autorisée (`allowed_hosts`), exécute localement le plugin demandé (`check_disk -w 20% -c 10% -p /`) sous l'utilisateur non privilégié `nrpe` (ou `nagios`), et renvoie la sortie texte ainsi que le code de retour au serveur central.
+
+### 2.3 Sécurisation du démon NRPE
+
+Le fichier `/etc/nagios/nrpe.cfg` sur les nœuds managés comporte deux directives de sécurité essentielles :
+
+* **`allowed_hosts=127.0.0.1,::1,192.168.4.100` :** Restreint l'accès au démon NRPE à la boucle locale et à l'adresse IP stricte du serveur de supervision Master.
+
+* **`dont_blame_nrpe=0` :** Interdit formellement au serveur Nagios de passer des arguments dynamiques arbitraires à travers le réseau. Toutes les commandes et leurs seuils doivent être figés localement sur le nœud dans `/etc/nagios/nrpe.d/*.cfg`.
+
+## 3\. Modèle objet de Nagios Core
+
+La configuration de Nagios repose sur des fichiers déclaratifs (`.cfg`) définissant cinq types d'objets principaux reliés entre eux :
+
+1. **`timeperiod` :** Plages horaires durant lesquelles les contrôles et les notifications sont actifs (ex: `24x7`, `workhours`).
+
+2. **`contact` / `contactgroup` :** Administrateurs destinataires des alertes et moyens de communication associés.
+
+3. **`command` :** Modèle de ligne de commande associant un nom logique à un binaire plugin et à des macros Nagios (`$HOSTADDRESS$`, `$ARG1$`).
+
+4. **`host` / `hostgroup` :** Définition d'un serveur (nom, adresse IP, cadence de vérification) et regroupement logique de machines partageant les mêmes services.
+
+5. **`service` :** Ressource unitaire surveillée, rattachée soit à un `host_name` individuel, soit à un `hostgroup_name` complet pour mutualiser la configuration.
+
+## 4\. Mémo technique opérationnel
+
+Cette section regroupe l'ensemble des commandes et des fichiers de configuration nécessaires pour déployer Nagios Core et les agents NRPE sous Rocky Linux 9 (ainsi que leurs équivalents sous Debian 12).
+
+### 4.1 Installation et initialisation du serveur Nagios sur le Master
+
+Sous Rocky Linux 9, les paquets Nagios et NRPE sont distribués via le dépôt communautaire **EPEL** (*Extra Packages for Enterprise Linux*) :
+
+```
+# --- SOUS ROCKY LINUX 9 / RHEL 9 ---
+# 1. Activation du depot EPEL et installation du serveur Nagios, Apache et des plugins
+dnf install -y epel-release
+dnf install -y nagios nagios-common nagios-plugins-all nagios-plugins-nrpe httpd httpd-tools php
+
+# 2. Creation du compte web 'nagiosadmin' (remplace le fichier htpasswd existant avec -c)
+htpasswd -bc /etc/nagios/passwd nagiosadmin "NagiosMaster#2026"
+chown root:apache /etc/nagios/passwd
+chmod 0640 /etc/nagios/passwd
+
+# 3. Ouverture du port HTTP sur le pare-feu et activation des services
+firewall-cmd --add-service=http --permanent
+firewall-cmd --reload
+systemctl enable --now httpd nagios
+
+
+```
+
+*Équivalent sous Debian / Ubuntu :*
+
+```
+# --- SOUS DEBIAN 12 / UBUNTU ---
+apt update
+apt install -y nagios4 nagios4-cgi nagios-images apache2 apache2-utils monitoring-plugins nagios-nrpe-plugin
+a2enmod cgi rewrite auth_digest authn_file
+
+# Activation de l'authentification dans le VirtualHost Apache de Nagios4
+sed -i 's/Require ip 127.0.0.1/Require valid-user/g' /etc/apache2/conf-available/nagios4-cgi.conf 2>/dev/null || true
+htpasswd -bc /etc/nagios4/htpasswd.users nagiosadmin "NagiosMaster#2026"
+chown root:www-data /etc/nagios4/htpasswd.users
+chmod 0640 /etc/nagios4/htpasswd.users
+systemctl enable --now apache2 nagios4
+
+
+```
+
+### 4.2 Correspondance des chemins entre Rocky Linux et Debian
+
+Pour rédiger vos playbooks Ansible et vos fichiers d'objets sans erreur de chemin, référez-vous à cette table de correspondance :
+
+| Élément technique | Chemin sous Rocky Linux 9 (RHEL) | Chemin sous Debian 12 / Ubuntu |
+| :---- | :---- | :---- |
+| Fichier principal Nagios | `/etc/nagios/nagios.cfg` | `/etc/nagios4/nagios.cfg` |
+| Dossier d'objets modulaires | `/etc/nagios/conf.d/` | `/etc/nagios4/conf.d/` |
+| Fichier `htpasswd` Apache | `/etc/nagios/passwd` | `/etc/nagios4/htpasswd.users` |
+| URL de l'interface Web | `http://<IP_Master>/nagios/` | `http://<IP_Master>/nagios4/` |
+| Répertoire des plugins | `/usr/lib64/nagios/plugins/` | `/usr/lib/nagios/plugins/` |
+| Nom du service serveur | `nagios.service` | `nagios4.service` |
+| Paquets de l'agent distant | `nrpe`, `nagios-plugins-all` | `nagios-nrpe-server`, `monitoring-plugins` |
+| Nom du service agent NRPE | `nrpe.service` | `nagios-nrpe-server.service` |
+
+*Astuce universelle pour les plugins :* Dans les fichiers de configuration Nagios (`resource.cfg`), la macro **`$USER1$`** pointe automatiquement vers le répertoire exact des plugins de la distribution (`/usr/lib64/nagios/plugins` sous Rocky Linux, `/usr/lib/nagios/plugins` sous Debian).
+
+### 4.3 Configuration de l'agent NRPE sur les nœuds managés
+
+Sur `node1` et `node2`, le fichier principal est `/etc/nagios/nrpe.cfg`. Il inclut automatiquement tous les fichiers `.cfg` placés dans `/etc/nagios/nrpe.d/` :
+
+```
+# Directives a verifier dans /etc/nagios/nrpe.cfg
+server_port=5666
+allowed_hosts=127.0.0.1,::1,192.168.4.100
+dont_blame_nrpe=0
+include_dir=/etc/nagios/nrpe.d/
+
+
+```
+
+Exemple de fichier de commandes locales `/etc/nagios/nrpe.d/mco_commands.cfg` (en adaptant `/usr/lib64/nagios/plugins` ou `/usr/lib/nagios/plugins` selon l'OS, ou en créant un lien symbolique) :
+
+```
+command[check_disk_root]=/usr/lib64/nagios/plugins/check_disk -w 20% -c 10% -p /
+command[check_load_cpu]=/usr/lib64/nagios/plugins/check_load -r -w 5.0,4.0,3.0 -c 10.0,8.0,6.0
+command[check_proc_nginx]=/usr/lib64/nagios/plugins/check_procs -c 1: -C nginx
+command[check_total_procs]=/usr/lib64/nagios/plugins/check_procs -w 250 -c 400
+
+
+```
+
+Ouverture filtrée du port TCP `5666` sur les nœuds uniquement pour l'adresse IP du Master (`192.168.4.100`) :
+
+```
+# Sous Rocky Linux (firewalld)
+firewall-cmd --add-rich-rule='rule family="ipv4" source address="192.168.4.100/32" port port="5666" protocol="tcp" accept' --permanent
+firewall-cmd --reload
+
+# Sous Debian (ufw)
+ufw allow from 192.168.4.100 to any port 5666 proto tcp
+
+
+```
+
+### 4.4 Déclaration des objets sur le serveur Nagios (Master)
+
+Assurez-vous que la directive `cfg_dir=/etc/nagios/conf.d` (ou `/etc/nagios4/conf.d`) est décommentée dans `nagios.cfg`.
+
+1. **Définition de la commande `check_nrpe` (`conf.d/commands_mco.cfg`) :** L'utilisation de la macro `$USER1$` garantit la portabilité du chemin vers le binaire `check_nrpe` :
+
+```
+define command {
+    command_name    check_nrpe
+    command_line    $USER1$/check_nrpe -H $HOSTADDRESS$ -c $ARG1$
+}
+
+
+```
+
+2. **Définition des hôtes et du groupe (`conf.d/hosts_mco.cfg`) :**
+
+```
+define host {
+    use                     linux-server
+    host_name               node1
+    alias                   Serveur Web Production 1
+    address                 192.168.4.101
+    max_check_attempts      3
+    check_interval          1
+    retry_interval          1
+}
+
+define host {
+    use                     linux-server
+    host_name               node2
+    alias                   Serveur Web Production 2
+    address                 192.168.4.102
+    max_check_attempts      3
+    check_interval          1
+    retry_interval          1
+}
+
+define hostgroup {
+    hostgroup_name          production-servers
+    alias                   Cluster Web Production
+    members                 node1,node2
+}
+
+
+```
+
+*(Note : sous Debian, si le modèle `linux-server` n'est pas défini par défaut, utilisez le modèle `generic-host` avec `check_command check-host-alive`).*
+
+3. **Définition des services mutualisés (`conf.d/services_mco.cfg`) :**
+
+```
+define service {
+    use                     generic-service
+    hostgroup_name          production-servers
+    service_description     Disponibilite HTTP Port 80
+    check_command           check_http!-p 80
+    max_check_attempts      3
+    check_interval          1
+    retry_interval          1
+}
+
+define service {
+    use                     generic-service
+    hostgroup_name          production-servers
+    service_description     Espace Disque Racine
+    check_command           check_nrpe!check_disk_root
+    max_check_attempts      3
+    check_interval          2
+    retry_interval          1
+}
+
+define service {
+    use                     generic-service
+    hostgroup_name          production-servers
+    service_description     Charge Processeur
+    check_command           check_nrpe!check_load_cpu
+    max_check_attempts      3
+    check_interval          1
+    retry_interval          1
+}
+
+define service {
+    use                     generic-service
+    hostgroup_name          production-servers
+    service_description     Processus Nginx
+    check_command           check_nrpe!check_proc_nginx
+    max_check_attempts      3
+    check_interval          1
+    retry_interval          1
+}
+
+define service {
+    use                     generic-service
+    hostgroup_name          production-servers
+    service_description     Nombre Total Processus
+    check_command           check_nrpe!check_total_procs
+    max_check_attempts      3
+    check_interval          2
+    retry_interval          1
+}
+
+
+```
+
+### 4.5 Tests unitaires CLI et validation pré-vol (*Pre-Flight Check*)
+
+Avant de recharger le démon Nagios, il est indispensable de tester l'agent en ligne de commande et de vérifier la syntaxe globale des fichiers `.cfg` :
+
+```
+# 1. Tester la reponse TLS de l'agent NRPE distant (retourne la version NRPE)
+/usr/lib64/nagios/plugins/check_nrpe -H 192.168.4.101
+
+# 2. Tester l'execution d'une commande distante declaree et afficher le code retour
+/usr/lib64/nagios/plugins/check_nrpe -H 192.168.4.101 -c check_disk_root
+echo $?
+
+# 3. Verifier l'integrite syntaxique de toute la configuration Nagios (-v)
+nagios -v /etc/nagios/nagios.cfg
+# (ou sous Debian : nagios4 -v /etc/nagios4/nagios.cfg)
+
+# 4. Recharger le service a chaud si Total Errors = 0 et Total Warnings = 0
+systemctl reload nagios
+
+
+```
+
+## Synthèse : Diagnostic des erreurs fréquentes Nagios / NRPE
+
+| Message d'erreur observé | Cause technique | Action corrective |
+| :---- | :---- | :---- |
+| `CHECK_NRPE: Receive header underflow` ou `Connection refused` | L'adresse IP du Master est absente de `allowed_hosts` dans `/etc/nagios/nrpe.cfg` ou le port TCP `5666` est bloqué. | Ajouter l'IP du Master dans `allowed_hosts`, ouvrir le port `5666/tcp` et redémarrer le service `nrpe`. |
+| `NRPE: Command 'check_xyz' not defined` | Le nom demandé après `-c` n'existe pas dans `/etc/nagios/nrpe.cfg` ni dans `/etc/nagios/nrpe.d/*.cfg`. | Vérifier l'orthographe exacte entre crochets `command[check_xyz]=...` et redémarrer `nrpe`. |
+| `NRPE: Unable to read output` | Le chemin vers le binaire du plugin configuré sur le nœud cible est erroné (`/usr/lib` vs `/usr/lib64`) ou non exécutable. | Vérifier l'existence du binaire sur le nœud cible et ses permissions d'exécution (`chmod +x`). |
+| `Return code of 127 is out of bounds` (sur le Master) | Le chemin du plugin défini dans `command_line` sur le serveur Nagios est introuvable. | Utiliser la macro `$USER1$/check_nrpe` dans `commands_mco.cfg`. |
+
+&nbsp;

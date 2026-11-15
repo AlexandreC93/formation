@@ -1,0 +1,195 @@
+# Diagnostic système, unités systemd et analyse des journaux
+
+## 1\. Méthodologie de diagnostic en production
+
+En phase de maintien en condition opérationnelle (MCO), le traitement des incidents système (un service qui refuse de démarrer, une charge anormale ou une perte d'accès) requiert une approche structurée.
+
+Le redémarrage immédiat d'un démon ou de la machine physique constitue une mauvaise pratique en production pour trois raisons :
+
+1. **Destruction des preuves volatiles :** Un redémarrage efface l'état de la mémoire vive, les tables de connexions réseau actives et les journaux non persistés stockés dans `/run/`.
+
+2. **Maintien de la cause racine :** Si la panne provient d'une erreur de syntaxe dans un fichier de configuration, d'un conflit de port réseau ou de permissions corrompues, le redémarrage ne résout pas l'anomalie.
+
+3. **Effets de bord sur l'infrastructure :** Redémarrer un nœud sans l'isoler préalablement peut interrompre des transactions en cours ou provoquer des bascules non maîtrisées sur un cluster.
+
+### 1.1 Séquence standard de résolution d'incident
+
+L'investigation s'effectue selon une démarche en six étapes :
+
+1. **Qualification du symptôme :** Identifier précisément le composant en défaut et le comportement observé.
+
+2. **Délimitation du périmètre :** Vérifier si l'incident est isolé sur un nœud ou global à l'infrastructure.
+
+3. **Collecte des traces :** Inspecter l'état des unités `systemd`, les journaux `journald`, les messages du noyau et les sockets réseau.
+
+4. **Formulation d'hypothèse :** Isoler la variable probable (configuration, droits POSIX, ressource saturée).
+
+5. **Remédiation ciblée :** Appliquer le correctif à chaud et valider le rétablissement du service.
+
+6. **Pérennisation :** Intégrer la correction dans le code d'automatisation (Ansible) et documenter l'incident.
+
+## 2\. Architecture de journalisation : `systemd-journald`
+
+Sur les distributions Linux modernes (Rocky Linux 9, Debian 12), la collecte des événements repose sur le démon **`systemd-journald`**, qui centralise l'ensemble des flux de journalisation du système.
+
+### 2.1 Sources et indexation des événements
+
+`systemd-journald` capture quatre sources principales d'informations :
+
+* Les messages du noyau Linux via `/dev/kmsg`.
+
+* Les sorties standard (`stdout`) et d'erreur (`stderr`) de tous les services gérés par `systemd`.
+
+* Les appels système `syslog()` traditionnels via la socket `/run/systemd/journal/syslog`.
+
+* Les événements du sous-système d'audit de sécurité (`auditd` / SELinux).
+
+Contrairement aux fichiers texte classiques sous `/var/log/`, `journald` stocke les événements dans des fichiers **binaires indexés**. À chaque entrée, le noyau associe des métadonnées non falsifiables préfixées par un tiret bas :
+
+* `_PID` : Identifiant du processus émetteur.
+
+* `_UID` : Identifiant de l'utilisateur système exécutant le processus.
+
+* `_SYSTEMD_UNIT` : Nom de l'unité concernée (ex: `nginx.service`).
+
+* `_COMM` : Nom de la commande binaire exécutée.
+
+### 2.2 Stockage volatile et stockage persistant
+
+Le comportement de rétention des journaux est défini dans le fichier `/etc/systemd/journald.conf` :
+
+* **Stockage volatile (`/run/log/journal/`) :** Utilisé lorsque le dossier `/var/log/journal/` est absent ou que `Storage=volatile` est configuré. Les journaux résident en mémoire RAM (`tmpfs`) et sont perdus lors de l'extinction du serveur.
+
+* **Stockage persistant (`/var/log/journal/`) :** Activé par la directive `Storage=persistent`. Les fichiers binaires sont écrits sur le disque dur et conservés entre les redémarrages.
+
+```
+# Configuration recommandée dans /etc/systemd/journald.conf
+[Journal]
+Storage=persistent
+SystemMaxUse=200M
+SystemKeepFree=500M
+MaxRetentionSec=1month
+
+```
+
+Pour appliquer ces changements à chaud et forcer le transfert des journaux de la RAM vers le disque :
+
+```
+mkdir -p /var/log/journal
+systemctl restart systemd-journald
+journalctl --flush
+
+```
+
+## 3\. Cycle de vie et typologie des pannes sous `systemd`
+
+Un service géré par `systemd` est contrôlé via un fichier d'unité (`.service`) et isolé dans un groupe de contrôle (*cgroup*). Lorsqu'un service refuse de démarrer, l'inspection de son état permet d'identifier la nature de la défaillance.
+
+### 3.1 Les principaux cas de défaillance d'une unité
+
+1. **Code de sortie en erreur (`Result: exit-code`) :** Le processus démarre, rencontre une erreur bloquante et s'arrête immédiatement en retournant un code différent de zéro (`ExecMainStatus!=0`). Les causes courantes sont une directive de configuration invalide ou un fichier introuvable.
+
+2. **Verrouillage administratif (`Unit is masked`) :** Une unité masquée possède un lien symbolique pointant vers `/dev/null` dans `/etc/systemd/system/`. Tant que ce verrou est actif, toute tentative de démarrage manuel ou automatique est refusée par `systemd`.
+
+3. **Conflit de liaison réseau (`bind() failed: Address already in use`) :** Le démon tente d'ouvrir un port TCP ou UDP (ex: port `80`), mais un autre processus occupe déjà cette socket sur l'interface réseau.
+
+4. **Erreur de permissions (`Permission denied`) :** Le processus (ou l'utilisateur non privilégié sous lequel il s'exécute, tel que `nginx` ou `www-data`) ne dispose pas des droits de lecture ou d'écriture POSIX (ou du contexte SELinux approprié) sur ses répertoires de travail ou de journalisation (`/var/log/nginx/`).
+
+5. **Dépassement de délai (`Result: timeout`) :** Le service ne confirme pas son initialisation dans le délai imparti (`TimeoutStartSec`). `systemd` interrompt alors le processus via un signal `SIGTERM` puis `SIGKILL`.
+
+## 4\. Mémo technique opérationnel
+
+Cette section regroupe les commandes d'investigation et de remédiation nécessaires pour diagnostiquer et rétablir les services en panne.
+
+### 4.1 Inspection des unités avec `systemctl`
+
+```
+# 1. Lister toutes les unités actuellement en échec sur le serveur
+systemctl --failed
+
+# 2. Afficher le statut complet d'un service sans tronquer les lignes (-l)
+systemctl status -l nginx.service
+
+# 3. Extraire des propriétés précises d'une unité (automatisation / scripts)
+systemctl show nginx.service -p Id,ActiveState,SubState,UnitFileState,ExecMainStatus
+
+# 4. Démasquer une unité verrouillée vers /dev/null
+systemctl unmask nginx.service
+
+# 5. Recharger la configuration systemd après modification d'une unité
+systemctl daemon-reload
+
+# 6. Réinitialiser le marqueur d'échec d'un service
+systemctl reset-failed nginx.service
+
+```
+
+### 4.2 Analyse des journaux avec `journalctl`
+
+```
+# 1. Afficher les derniers logs d'une unité avec les détails étendus (-x) et sans pagination
+journalctl -xeu nginx.service --no-pager -n 30
+
+# 2. Suivre les journaux d'un service en direct
+journalctl -u nginx.service -f
+
+# 3. Filtrer uniquement les messages d'erreur, critiques ou d'alerte du démarrage actuel (-b)
+journalctl -b -p err..emerg
+
+# 4. Filtrer sur une plage horaire précise
+journalctl --since "30 min ago"
+journalctl --since "2026-11-10 08:00:00" --until "2026-11-10 09:00:00"
+
+# 5. Vérifier l'espace disque occupé par les journaux et nettoyer au-delà de 200 Mo
+journalctl --disk-usage
+journalctl --vacuum-size=200M
+
+```
+
+### 4.3 Identification des conflits de ports et de processus
+
+Lorsqu'un service signale l'erreur `98: Address already in use`, l'utilitaire `ss` permet d'identifier le processus qui occupe le port :
+
+```
+# 1. Identifier le processus et le PID écoutant sur le port TCP 80
+ss -tlpn 'sport = :80'
+
+# 2. Alternative avec lsof sur le port 80
+lsof -i TCP:80 -s TCP:LISTEN
+
+# 3. Terminer un processus parasite par son PID ou son motif de commande
+kill -9 <PID>
+pkill -9 -f "python3 -m http.server"
+
+```
+
+### 4.4 Contrôle syntaxique et rétablissement des permissions
+
+Avant de relancer un démon web, il convient de tester sa configuration à sec et de vérifier les droits de son répertoire de journaux :
+
+```
+# 1. Tester la validité syntaxique de la configuration Nginx
+nginx -t
+
+# 2. Vérifier les droits d'accès d'un répertoire et de ses fichiers
+ls -ld /var/log/nginx
+ls -la /var/log/nginx
+
+# 3. Rétablir le propriétaire et les permissions standards sur les logs
+chown -R nginx:root /var/log/nginx    # (ou www-data:adm sous Debian)
+chmod 0755 /var/log/nginx
+chmod 0640 /var/log/nginx/*.log
+
+```
+
+## Synthèse : Procédure réflexe de dépannage d'un service
+
+| Étape | Commande de diagnostic | Objectif technique |
+| :---- | :---- | :---- |
+| **1\. État de l'unité** | `systemctl status -l <service>` | Vérifier si l'unité est `masked`, `failed` ou `inactive` et lire le code de retour. |
+| **2\. Lecture des logs** | `journalctl -xeu <service> -n 30` | Identifier la ligne d'erreur exacte émise par le binaire au moment de l'arrêt. |
+| **3\. Test de syntaxe** | `nginx -t` / `sshd -t` / `httpd -t` | Valider la grammaire des fichiers de configuration avant tout redémarrage. |
+| **4\. Audit des sockets** | `ss -tlpn 'sport = :<port>'` | Vérifier qu'aucun processus tiers n'occupe le port d'écoute du service. |
+| **5\. Audit des droits** | `ls -ld /var/log/<service>` | Confirmer que le compte de service possède les droits d'accès à ses fichiers. |
+
+&nbsp;

@@ -1,0 +1,182 @@
+# Audit de performance historique avec sysstat, sar et pidstat
+
+## 1\. Limites du diagnostic temps réel et nécessité de l'audit historique
+
+Les outils d'analyse en temps réel (`vmstat`, `iostat`, `iotop`, `top`) sont indispensables lorsqu'un incident est en cours au moment où l'administrateur se connecte au serveur. Toutefois, en production, de nombreuses dégradations surviennent de manière transitoire en dehors des heures ouvrées :
+
+* Un traitement planifié nocturne (sauvegarde, réindexation, rotation de journaux) sature les disques ou la mémoire vive entre 02h00 et 02h25 du matin.
+
+* Une fuite mémoire progressive provoque l'intervention de l'*OOM Killer* à 04h15, après quoi l'utilisation RAM redevient normale.
+
+* Des micro-saturations réseau ou processeur provoquent des expirations de délai (*Timeouts*) sporadiques sans laisser d'erreur explicite dans `journald`.
+
+Lorsque l'administrateur prend connaissance du ticket au matin, le serveur est redevenu calme. Sans enregistrement continu des compteurs du noyau, il est impossible d'identifier la ressource qui a saturé pendant la nuit. C'est le rôle de la suite **`sysstat`** et de son outil d'interrogation **`sar`** (*System Activity Reporter*).
+
+## 2\. Architecture de collecte de `sysstat`
+
+La suite `sysstat` fonctionne comme une « boîte noire » légère qui échantillonne périodiquement les compteurs internes du noyau (`/proc/stat`, `/proc/meminfo`, `/proc/vmstat`, `/proc/diskstats`, `/proc/net/dev`) et les enregistre sur disque dans un format binaire compact.
+
+### 2.1 Les composants internes (`sadc`, `sa1`, `sa2`, `sar`)
+
+L'architecture repose sur quatre composants complémentaires :
+
+1. **`sadc` (*System Activity Data Collector*) :** Binaire bas niveau écrit en C qui lit les compteurs dans `/proc` et les écrit dans le fichier binaire journalier.
+
+2. **`sa1` :** Script shell d'enveloppe (*wrapper*) appelé périodiquement (toutes les 10 minutes par défaut, ou toutes les minutes en profil haute précision) par un timer `systemd` (`sysstat-collect.timer`) ou par `cron`. Il exécute `sadc` en tâche de fond.
+
+3. **`sa2` :** Script exécuté une fois par jour en fin de journée (`sysstat-summary.timer`) pour générer un rapport textuel quotidien lisible (`sarDD`) et purger les archives dépassant la durée de rétention configurée (`HISTORY=28` jours par défaut).
+
+4. **`sar` :** Utilitaire d'analyse en ligne de commande permettant soit de relire les archives binaires passées, soit d'effectuer un échantillonnage en direct, soit d'enregistrer une capture dédiée dans un fichier spécifique.
+
+### 2.2 Emplacement des archives selon la distribution
+
+Les fichiers binaires sont nommés **`saDD`** où **`DD`** représente le numéro du jour du mois sur deux chiffres (ex: `sa13` pour le 13 du mois courant) :
+
+| Élément | Chemin sous Rocky Linux 9 (RHEL) | Chemin sous Debian 12 / Ubuntu |
+| :---- | :---- | :---- |
+| Répertoire des archives (`saDD`) | `/var/log/sa/` | `/var/log/sysstat/` |
+| Fichier de configuration | `/etc/sysconfig/sysstat` | `/etc/default/sysstat` et `/etc/sysstat/sysstat` |
+| Unités `systemd` de collecte | `sysstat.service` et `sysstat-collect.timer` | `sysstat.service` et `sysstat-collect.timer` |
+
+*Note spécifique à Debian / Ubuntu :* Par défaut après l'installation du paquet `sysstat` sous Debian, la collecte automatique est désactivée dans `/etc/default/sysstat` (`ENABLED="false"`). Il faut impérativement passer cette directive à `ENABLED="true"` et redémarrer le service `sysstat`.
+
+## 3\. Exploitation de `sar` par sous-système matériel
+
+Lorsqu'il est invoqué sans argument de fichier, `sar` lit automatiquement le fichier binaire du jour courant. Il accepte des options de sélection par ressource matérielle :
+
+### 3.1 Analyse du processeur et de la file d'attente (`-u` et `-q`)
+
+* **`sar -u` (CPU global) ou `sar -P ALL` (détail par cœur) :** Affiche l'évolution historique des pourcentages `%user`, `%system`, `%iowait`, `%steal` et `%idle`.
+
+* **`sar -q` (File d'attente et Load Average) :** Affiche l'historique de la file d'exécution (`runq-sz`), le nombre total de tâches présentes sur le système (`plist-sz`), les moyennes de charge (`ldavg-1`, `ldavg-5`, `ldavg-15`) et le nombre de processus bloqués en attente d'I/O (`blocked`).
+
+### 3.2 Analyse de la mémoire vive et du Swap (`-r`, `-S` et `-W`)
+
+* **`sar -r` (Utilisation de la RAM) :** Affiche la mémoire libre (`kbmemfree`), la mémoire réellement disponible (`kbavail`), la mémoire utilisée (`%memused`), les tampons (`kbbuffers`) et le cache de pages (`kbcached`).
+
+* **`sar -S` (Occupation de l'espace Swap) :** Affiche le volume et le pourcentage de Swap occupé (`kbswpused`, `%swpused`).
+
+* **`sar -W` (Activité de pagination / *Swapping*) :** Indicateur critique de saturation mémoire : affiche le nombre de pages lues depuis le swap (`pswpin/s`) et écrites vers le swap (`pswpout/s`) par seconde. Une élévation simultanée de `sar -W` et du `%iowait` confirme un effondrement des performances par manque de RAM.
+
+### 3.3 Analyse du stockage et des disques (`-b` et `-d`)
+
+* **`sar -b` (Activité globale de transfert I/O) :** Affiche le nombre total de transactions par seconde (`tps`), ainsi que les lectures (`rtps`, `bread/s`) et écritures (`wtps`, `bwrtn/s`).
+
+* **`sar -d -p` (Statistiques détaillées par périphérique bloc) :** L'option `-p` (*pretty*) traduit les numéros majeurs/mineurs (`dev253-0`) en noms de périphériques lisibles (`sda`, `vda`, `rl-root`). Elle expose l'historique du temps de réponse moyen (`await`) et du taux de saturation (`%util`).
+
+### 3.4 Analyse du trafic et des erreurs réseau (`-n`)
+
+L'option `-n` prend un mot-clé ciblant une couche de la pile réseau :
+
+* **`sar -n DEV` :** Débits par interface réseau (`rxkB/s`, `txkB/s`, `rxpck/s`, `txpck/s`) et pourcentage d'occupation du lien (`%ifutil`).
+
+* **`sar -n EDEV` :** Compteurs d'erreurs et de pertes de paquets par interface (`rxerr/s`, `txerr/s`, `rxdrop/s`, `txdrop/s`).
+
+* **`sar -n TCP,ETCP` :** Nombre d'ouvertures de connexions TCP actives/passives par seconde (`active/s`, `passive/s`) et taux de retransmissions TCP (`retrans/s`).
+
+## 4\. Mémo technique opérationnel
+
+Cette section regroupe les commandes d'activation de la collecte, d'interrogation temporelle des archives, d'enregistrement d'audit ciblé et d'exportation avec `sadf`.
+
+### 4.1 Activation et vérification de la collecte automatique
+
+```
+# --- SOUS ROCKY LINUX 9 / RHEL 9 ---
+systemctl enable --now sysstat sysstat-collect.timer
+systemctl list-timers sysstat*
+
+# --- SOUS DEBIAN 12 / UBUNTU ---
+sed -i 's/ENABLED="false"/ENABLED="true"/' /etc/default/sysstat
+systemctl enable --now sysstat sysstat-collect.timer
+
+# Forcer immediatement l'ecriture d'un point de mesure dans l'archive du jour
+/usr/lib64/sa/sa1 1 1 2>/dev/null || /usr/lib/sysstat/sa1 1 1
+
+```
+
+### 4.2 Interrogation historique et filtrage horaire (`-f`, `-s`, `-e`)
+
+Pour analyser un incident survenu à une date ou une heure précise, on combine l'option **`-f`** (chemin du fichier binaire) avec **`-s HH:MM:SS`** (*start*, heure de début) et **`-e HH:MM:SS`** (*end*, heure de fin) :
+
+```
+# 1. Lire les statistiques CPU du jour courant entre 02h00 et 03h30
+LC_ALL=C sar -u -s 02:00:00 -e 03:30:00
+
+# 2. Lire un fichier d'archive specifique (ex: le 10 du mois ou une capture dediee)
+LC_ALL=C sar -r -f /var/log/sa/sa10
+# (ou sous Debian : LC_ALL=C sar -r -f /var/log/sysstat/sa10)
+
+# 3. Afficher un rapport complet (CPU, RAM, Swap, I/O, Load) sur une fenetre horaire
+LC_ALL=C sar -u -r -W -b -q -s 14:00:00 -e 14:30:00
+
+```
+
+*Astuce d'exploitation :* Préfixer la commande par **`LC_ALL=C`** force l'affichage des heures au format international 24 heures (`14:30:00` au lieu de `02:30:00 PM`) et utilise le point (`.`) comme séparateur décimal, ce qui facilite le filtrage avec `awk` ou `grep`.
+
+### 4.3 Enregistrement d'une capture d'audit dédiée (`sar -o`)
+
+Lors d'un test de montée en charge ou de la surveillance rapprochée d'un serveur instable, attendre le cycle de 10 minutes du timer standard est insuffisant. L'option **`-o <fichier>`** permet d'enregistrer toutes les métriques du noyau à haute fréquence (ex: toutes les secondes) dans un fichier binaire autonome :
+
+```
+# 1. Enregistrer toutes les metriques système toutes les 1s pendant 30s en arriere-plan
+sar -o /var/tmp/audit_incident.sa 1 30 >/dev/null 2>&1 &
+
+# 2. Relire ensuite ce meme fichier binaire sous differents angles d'analyse :
+LC_ALL=C sar -u -f /var/tmp/audit_incident.sa       # Angle Processeur
+LC_ALL=C sar -r -W -f /var/tmp/audit_incident.sa    # Angle Memoire et Swap
+LC_ALL=C sar -d -p -f /var/tmp/audit_incident.sa    # Angle Latence Disque
+LC_ALL=C sar -n DEV -f /var/tmp/audit_incident.sa   # Angle Reseau
+
+```
+
+### 4.4 Profilage multi-ressources par processus avec `pidstat`
+
+Alors que `sar` enregistre les compteurs globaux de la machine, **`pidstat`** permet de corréler en une seule commande la consommation CPU (`-u`), mémoire (`-r`), disque (`-d`) et les changements de contexte (`-w`) processus par processus :
+
+```
+# 1. Audit complet (CPU, RAM, I/O) des processus actifs avec leurs arguments complets (-l)
+LC_ALL=C pidstat -urd -l 1 5
+
+# 2. Surveiller uniquement les processus dont le nom correspond a un motif (-C)
+LC_ALL=C pidstat -urd -C "nginx|python|stress" 1 5
+
+# 3. Inspecter les changements de contexte volontaires (attente I/O) et involontaires (CPU)
+LC_ALL=C pidstat -w 1 3
+
+```
+
+*Interprétation des changements de contexte dans `pidstat -w` :*
+
+* **`cswch/s` (*voluntary context switches*) :** Le processus rend volontairement la main au noyau parce qu'il attend une ressource (lecture disque, réponse réseau).
+
+* **`nvcswch/s` (*non voluntary context switches*) :** Le noyau retire de force le processeur au processus parce que son quota de temps CPU (*time slice*) est expiré et que d'autres tâches attendent dans la file `r`.
+
+### 4.5 Exportation et conversion des archives avec `sadf`
+
+Pour intégrer les données d'une archive binaire `saDD` dans un rapport d'incident automatisé, un tableur ou une base de données, l'utilitaire **`sadf`** (*System Activity Data Formatter*) convertit les fichiers binaires en formats structurés (**CSV / `-d`**, **JSON / `-j`**, **XML / `-x`** ou **SVG / `-g`**) :
+
+```
+# 1. Exporter les statistiques CPU et RAM d'une archive au format CSV (separateur ';')
+sadf -d /var/tmp/audit_incident.sa -- -u -r > /var/tmp/export_cpu_ram.csv
+
+# 2. Exporter les statistiques disques au format JSON
+sadf -j /var/tmp/audit_incident.sa -- -d -p > /var/tmp/export_disk.json
+
+# 3. Generer directement un graphique vectoriel SVG consultable dans un navigateur web
+sadf -g /var/tmp/audit_incident.sa -- -u -r -b > /var/tmp/graph_incident.svg
+
+```
+
+## Synthèse : Options de référence de `sar` et `sysstat`
+
+| Commande / Option | Sous-système audité | Indicateurs clés à contrôler |
+| :---- | :---- | :---- |
+| `sar -u` / `sar -P ALL` | Processeur (global ou par cœur) | `%user`, `%system`, `%iowait`, `%steal`, `%idle` |
+| `sar -q` | File d'exécution et charge | `runq-sz`, `ldavg-1`, `ldavg-5`, `blocked` |
+| `sar -r` et `sar -W` | Mémoire vive et pagination Swap | `kbavail`, `%memused`, `pswpin/s`, `pswpout/s` |
+| `sar -b` et `sar -d -p` | Entrées/Sorties et disques blocs | `tps`, `bread/s`, `bwrtn/s`, `await`, `%util` |
+| `sar -n DEV` / `EDEV` | Interfaces réseau et erreurs | `rxkB/s`, `txkB/s`, `rxerr/s`, `rxdrop/s` |
+| `sar -o <fic> <int> <nb>` | Capture binaire multi-métriques | Enregistre tous les compteurs pour relecture `-f <fic>` |
+| `sadf -d` / `-j` / `-g` | Conversion et exportation | Transforme une archive binaire en CSV, JSON ou SVG |
+
+&nbsp;

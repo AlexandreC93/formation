@@ -1,0 +1,206 @@
+# Diagnostic matériel, tampon du noyau et gestion des pilotes
+
+## 1\. Architecture du noyau Linux et espace matériel
+
+Le noyau Linux est un noyau **monolithique modulaire**. Il s'exécute intégralement dans un espace mémoire privilégié (*Kernel Space*) et assure l'interface directe entre les composants matériels (processeur, mémoire vive, contrôleurs PCI/NVMe, cartes réseau) et les processus applicatifs situés dans l'espace utilisateur (*User Space*).
+
+Contrairement à un noyau purement statique, Linux permet de charger et de décharger dynamiquement à chaud des extensions binaires appelées **modules noyau** (fichiers portant l'extension `.ko` ou `.ko.xz`, situés dans `/lib/modules/$(uname -r)/`). Ces modules contiennent :
+
+* Les pilotes de périphériques matériels (cartes réseau `e1000e` ou `virtio_net`, contrôleurs de stockage `nvme` ou `mpt3sas`).
+
+* Les systèmes de fichiers (`xfs`, `ext4`, `nfs`, `vfat`).
+
+* Les fonctionnalités réseau et de sécurité (`nftables`, `wireguard`, `bonding`).
+
+### 1.1 Les pseudo-systèmes de fichiers `/proc` et `/sys`
+
+Pour exposer l'état du matériel et des pilotes sans recourir à des outils binaires propriétaires, le noyau maintient deux arborescences virtuelles en mémoire vive (elles n'occupent aucun espace sur le disque dur) :
+
+1. **`/proc` (*Process Information Pseudo-Filesystem*) :** Contient les informations relatives aux processus en cours d'exécution (`/proc/<PID>/`), l'état des ressources globales (`/proc/meminfo`, `/proc/cpuinfo`, `/proc/mounts`) et les paramètres réglables du noyau (`/proc/sys/`).
+
+2. **`/sys` (`sysfs`) :** Expose une vue structurée et hiérarchique de l'ensemble des bus matériels, des périphériques détectés (`/sys/devices/`), des classes d'équipements (`/sys/class/net/`, `/sys/class/block/`) et des modules actuellement chargés en mémoire (`/sys/module/`).
+
+## 2\. Analyse du tampon circulaire du noyau (`dmesg`)
+
+Lors de la phase d'amorçage, avant même que le système de fichiers racine ne soit monté ou que le démon `systemd-journald` ne soit actif, le noyau doit pouvoir enregistrer les événements d'initialisation matérielle et les erreurs de pilotes.
+
+### 2.1 Fonctionnement du *Kernel Ring Buffer*
+
+Le noyau écrit ses messages dans une zone mémoire de taille fixe appelée tampon circulaire (*Ring Buffer*), exposée via le périphérique `/dev/kmsg`. Lorsque ce tampon est plein, les nouveaux messages écrasent les plus anciens.
+
+L'utilitaire **`dmesg`** permet d'interroger ce tampon. En maintenance opérationnelle, trois catégories d'événements matériels ou système sont recherchées en priorité dans `dmesg` :
+
+1. **Erreurs d'entrées/sorties disque (*I/O Errors*) :** Défaillance physique d'un secteur, déconnexion d'un LUN SAN/iSCSI ou passage forcé d'un système de fichiers en lecture seule (`Remounting filesystem read-only`) suite à une corruption de journal XFS/EXT4.
+
+2. **Intervention de l'*OOM Killer* (*Out-Of-Memory*) :** Lorsque la mémoire vive et le swap sont intégralement saturés, le noyau sacrifie le processus ayant le score mémoire le plus élevé (`Out of memory: Killed process <PID>`) pour éviter le blocage complet du serveur.
+
+3. **Défaillances de pilotes ou de mémoire :** Erreurs de segmentation applicatives (`segfault at ...`), blocages d'interruptions matérielles CPU (`soft lockup`) ou erreurs matérielles corrigées sur les barrettes de RAM ECC (`EDAC`).
+
+```
+# 1. Afficher les messages du noyau avec horodatage lisible (-T) et coloration
+dmesg -T
+
+# 2. Filtrer uniquement les niveaux d'erreur, critiques et d'alerte
+dmesg -T --level=err,crit,alert,emerg
+
+# 3. Suivre en temps réel l'apparition de nouveaux événements matériels
+dmesg -Tw
+
+# 4. Rechercher un événement d'éviction mémoire (OOM Killer) ou d'erreur disque
+dmesg -T | grep -iE "oom|killed process|i/o error|read-only|segfault"
+
+# 5. Alternative via journald pour interroger les messages noyau du boot courant
+journalctl -k -b
+
+```
+
+*Note technique :* L'horodatage affiché par `dmesg -T` est calculé à partir du temps écoulé depuis le démarrage. Il peut présenter un léger décalage si le serveur a été mis en veille prolongée ; pour un horodatage exact corrélé avec les services, on privilégie `journalctl -k`.
+
+## 3\. Gestion et dépannage des modules noyau
+
+Lorsqu'un périphérique n'est pas reconnu, qu'un pilote présente un dysfonctionnement ou qu'une politique de sécurité impose de désactiver certains systèmes de fichiers (comme le stockage USB `usb-storage` ou d'anciens protocoles réseau), l'administrateur intervient directement sur les modules du noyau.
+
+### 3.1 Inspection des modules (`lsmod` et `modinfo`)
+
+* **`lsmod` :** Lit le fichier `/proc/modules` et affiche la liste des modules chargés en mémoire vive, leur taille, le nombre d'instances qui les utilisent (*Used by*) et les autres modules qui en dépendent.
+
+* **`modinfo` :** Inspecte le fichier binaire d'un module pour afficher sa description, son auteur, sa licence, son chemin disque et surtout la liste des **paramètres configurables** (`parm:`) qu'il accepte au chargement.
+
+```
+# 1. Lister les modules chargés et filtrer sur un pilote spécifique
+lsmod | grep -E "xfs|vfat|e1000"
+
+# 2. Afficher la fiche technique complète et les paramètres d'un module
+modinfo vfat
+modinfo loop
+
+# 3. Consulter la valeur actuelle d'un paramètre de module déjà chargé en RAM
+cat /sys/module/loop/parameters/max_loop
+
+```
+
+### 3.2 Chargement et déchargement à chaud (`modprobe`)
+
+Pour manipuler les modules, on utilise la commande **`modprobe`** (de préférence aux commandes bas niveau `insmod` et `rmmod`), car `modprobe` consulte automatiquement l'arbre des dépendances généré par `depmod` (`/lib/modules/$(uname -r)/modules.dep`) :
+
+```
+# 1. Charger un module et toutes ses dépendances requises
+modprobe vfat
+
+# 2. Charger un module en lui passant un paramètre d'exécution spécifique
+modprobe loop max_loop=16
+
+# 3. Décharger proprement un module et ses dépendances inutilisées (-r)
+modprobe -r vfat
+
+# 4. Simuler un chargement ou déchargement à blanc pour voir les actions (-n -v)
+modprobe -n -v vfat
+
+```
+
+*Cas de blocage au déchargement :* Si `modprobe -r` retourne l'erreur `FATAL: Module <nom> is in use`, cela signifie qu'un système de fichiers est encore monté, qu'une interface réseau est active ou qu'un processus maintient un descripteur ouvert sur le périphérique correspondant.
+
+### 3.3 Configuration persistante et blocage (`blacklist`)
+
+Les actions réalisées avec `modprobe` en ligne de commande ne survivent pas au redémarrage. La persistance est gérée par deux répertoires de configuration :
+
+1. **Chargement automatique au démarrage (`/etc/modules-load.d/*.conf`) :** Contient la liste des noms de modules à charger systématiquement lors de l'initialisation par le service `systemd-modules-load.service`.
+
+2. **Options et interdiction de chargement (`/etc/modprobe.d/*.conf`) :** Permet de passer des options permanentes à un pilote ou d'empêcher son chargement automatique.
+
+Il existe deux niveaux d'interdiction dans `/etc/modprobe.d/` :
+
+* **La directive `blacklist <module>` :** Empêche le chargement automatique du module par reconnaissance matérielle (`udev` / alias matériel), mais **n'empêche pas** son chargement manuel par un administrateur ou son chargement indirect si un autre module en dépend.
+
+* **La directive `install <module> /bin/false` (ou `/bin/true`) :** Intercepte toute tentative de chargement du module et exécute `/bin/false` à la place. Ce mécanisme bloque totalement le module, même en cas de dépendance ou d'appel manuel `modprobe`. En dépannage, c'est souvent la cause d'un refus de chargement d'un pilote ou d'un système de fichiers (`modprobe: ERROR: could not insert ...: Operation not permitted`).
+
+```
+# Exemple de fichier /etc/modprobe.d/custom-storage.conf
+
+# 1. Passer un paramètre permanent au module loop
+options loop max_loop=32
+
+# 2. Désactiver le chargement automatique par détection matérielle
+blacklist usb-storage
+
+# 3. Blocage strict empêchant toute insertion du module cramfs
+install cramfs /bin/false
+
+```
+
+## 4\. Gestion dynamique des périphériques (`udev`)
+
+Lorsqu'un matériel est connecté au serveur (ajout à chaud d'un disque virtuel dans l'hyperviseur, branchement d'une carte réseau), le noyau détecte l'équipement et émet un événement nommé **`uevent`** via une socket Netlink vers le démon **`systemd-udevd`**.
+
+### 4.1 Rôle du démon `udevd` et règles personnalisées
+
+Le démon `udevd` réceptionne l'événement matériel, crée le fichier spécial de périphérique correspondant dans **`/dev/`** (ex: `/dev/sdb`), charge le module noyau associé et applique les règles définies dans :
+
+* `/usr/lib/udev/rules.d/` : Règles standards fournies par la distribution (à ne pas modifier).
+
+* **`/etc/udev/rules.d/`** : Règles personnalisées de l'administrateur (prioritaires).
+
+Les fichiers de règles sont lus par ordre lexicographique (`10-...`, `50-...`, `99-custom.rules`). Une règle `udev` associe des critères de correspondance (`==`, basés sur les attributs du matériel) à des actions d'affectation (`=` ou `+=`, comme la création d'un lien symbolique persistant, le changement des permissions ou l'ajustement d'un paramètre disque) :
+
+```
+# Exemple : /etc/udev/rules.d/99-local-disk.rules
+# Créer un lien symbolique /dev/data_disk et fixer les droits pour un disque spécifique
+SUBSYSTEM=="block", KERNEL=="sdb", SYMLINK+="data_disk", MODE="0660", GROUP="disk"
+
+```
+
+### 4.2 Diagnostic et pilotage avec `udevadm`
+
+L'outil **`udevadm`** permet d'inspecter les attributs matériels d'un périphérique, de surveiller les événements à chaud et d'appliquer de nouvelles règles sans redémarrer le serveur :
+
+```
+# 1. Observer en temps réel les événements noyau (uevents) et le traitement udev
+udevadm monitor --property
+
+# 2. Afficher tous les attributs matériels d'un périphérique (pour rédiger une règle)
+udevadm info --query=all --name=/dev/sda
+udevadm info --attribute-walk --name=/dev/sda
+
+# 3. Recharger la configuration après création ou modification d'un fichier .rules
+udevadm control --reload-rules
+
+# 4. Forcer le ré-examen des périphériques pour appliquer les règles immédiatement
+udevadm trigger --subsystem-match=block
+
+# 5. Attendre que la file d'événements udev en cours soit entièrement traitée
+udevadm settle
+
+```
+
+## 5\. Inventaire matériel des bus système
+
+Pour identifier un périphérique physique avant même que son pilote ne soit opérationnel, l'administrateur interroge directement les bus matériels :
+
+```
+# 1. Lister les périphériques connectés sur le bus PCI et afficher le pilote noyau associé (-k)
+lspci -nnk
+
+# 2. Lister l'arborescence des périphériques blocs, leurs tailles et types de systèmes de fichiers
+lsblk -f
+
+# 3. Afficher les identifiants uniques (UUID) des partitions de stockage
+blkid
+
+# 4. Extraire les informations matérielles du BIOS/UEFI et du châssis (DMI / SMBIOS)
+dmidecode -t system
+dmidecode -t memory
+
+```
+
+## Synthèse : Commandes de diagnostic noyau et matériel
+
+| Commande | Rôle opérationnel |
+| :---- | :---- |
+| `dmesg -T --level=err,crit` | Affiche les erreurs matérielles et noyau horodatées depuis le tampon mémoire. |
+| `lspci -k` | Liste les cartes PCI (réseau, stockage) et indique quel module noyau les pilote. |
+| `lsmod` / `modinfo <mod>` | Liste les modules chargés en RAM et affiche les paramètres acceptés par un module. |
+| `modprobe <mod>` / `modprobe -r` | Charge ou décharge dynamiquement un module noyau et ses dépendances. |
+| `/etc/modprobe.d/*.conf` | Répertoire contenant les directives `options`, `blacklist` et `install` des modules. |
+| `udevadm control --reload-rules` | Recharge les règles `/etc/udev/rules.d/` avant un déclenchement `udevadm trigger`. |
+
+&nbsp;

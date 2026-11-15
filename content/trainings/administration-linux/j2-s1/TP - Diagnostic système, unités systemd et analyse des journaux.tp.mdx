@@ -1,0 +1,160 @@
+# Diagnostic système, unités systemd et analyse des journaux
+
+## 1\. Objectifs
+
+Deux alertes viennent d'être remontées concernant les serveurs web de l'infrastructure :
+
+* **Incident 1 (`node1` \- `192.168.4.101`) :** Le serveur frontal ne répond plus sur le port HTTP 80\. Les tentatives de relance du service échouent.
+
+* **Incident 2 (`node2` \- `192.168.4.102`) :** Le démon Nginx est en état d'échec (`failed`) et refuse de s'initialiser.
+
+Vous devez mener le diagnostic sans redémarrer les machines (`reboot` interdit), identifier les causes racines à l'aide de `systemctl`, `journalctl` et `ss`, rétablir les services à chaud, puis configurer la persistance des journaux système.
+
+Les opérations d'audit et de correction sont exécutées depuis le nœud **Master** (`192.168.4.100`) dans le répertoire `~/diagnostic-j2s1/`.
+
+## 2\. Préparation de l'environnement et injection des pannes
+
+1. Créez le répertoire `~/diagnostic-j2s1/` sur le Master et liez-y votre fichier `ansible.cfg` ainsi que votre inventaire `inventory.ini` du Jour 1 :
+
+```
+mkdir -p ~/diagnostic-j2s1
+cd ~/diagnostic-j2s1
+cp ~/tp-ansible/ansible.cfg ~/tp-ansible/inventory.ini .
+
+```
+
+2. Créez et exécutez le script suivant depuis le Master pour injecter les anomalies sur `node1` et `node2` :
+
+```
+cat << 'EOF' > ~/diagnostic-j2s1/inject_j2s1.sh
+#!/bin/bash
+set -e
+
+# Anomalies sur node1 : masquage d'unité et processus occupant le port 80
+ansible node1 -b -m ansible.builtin.shell -a "
+  systemctl stop nginx 2>/dev/null || true
+  systemctl mask nginx.service
+  nohup python3 -m http.server 80 --bind 0.0.0.0 >/dev/null 2>&1 &
+"
+
+# Anomalies sur node2 : directive invalide et permissions corrompues sur les logs
+ansible node2 -b -m ansible.builtin.shell -a "
+  systemctl stop nginx 2>/dev/null || true
+  CONF_FILE=\$(grep -rnwl '/etc/nginx/' -e 'listen' | head -n 1)
+  sed -i 's/listen/invalid_directive_mco on;\n    listen/' \"\$CONF_FILE\"
+  chown -R root:root /var/log/nginx
+  chmod -R 000 /var/log/nginx
+"
+echo "Anomalies injectees sur node1 et node2."
+EOF
+
+chmod +x ~/diagnostic-j2s1/inject_j2s1.sh
+~/diagnostic-j2s1/inject_j2s1.sh
+
+```
+
+## 3\. Cahier des charges
+
+### 3.1 État des lieux initial
+
+À l'aide de commandes Ad-Hoc Ansible depuis le Master :
+
+1. Listez les unités en échec sur le groupe `production_nodes` avec `systemctl --failed`.
+
+2. Interrogez les propriétés `ActiveState`, `SubState` et `UnitFileState` du service `nginx` sur les deux nœuds via la sous-commande `systemctl show`.
+
+3. Affichez les 20 dernières lignes du journal de l'unité `nginx.service` sur chaque serveur.
+
+### 3.2 Résolution de l'incident sur `node1`
+
+1. **Analyse du verrouillage :** Tentez de démarrer le service `nginx` sur `node1` et relevez le message retourné par `systemd`.
+
+2. **Démasquage :** Levez le masquage administratif de l'unité `nginx.service` et rechargez le démon `systemd`.
+
+3. **Analyse du conflit de port :**
+
+   * Relancez le démarrage de `nginx` et consultez le journal avec `journalctl -xeu nginx.service -n 20 --no-pager` pour identifier le code d'erreur réseau.
+
+   * Utilisez la commande `ss -tlpn 'sport = :80'` pour relever le nom du processus et le PID qui occupent le port TCP 80\.
+
+4. **Remise en service :** Terminez le processus parasite identifié, vérifiez que le port 80 est libre, puis démarrez et vérifiez le service `nginx`.
+
+### 3.3 Résolution de l'incident sur `node2`
+
+1. **Diagnostic de configuration :**
+
+   * Tentez de démarrer `nginx` sur `node2`, puis consultez les journaux de l'unité.
+
+   * Exécutez le test de validation syntaxique `nginx -t` pour localiser le fichier et le numéro de ligne comportant une directive erronée.
+
+2. **Correction syntaxique :** Supprimez la ligne contenant `invalid_directive_mco` dans le fichier de configuration identifié, puis validez à nouveau avec `nginx -t`.
+
+3. **Diagnostic des permissions :**
+
+   * Tentez de démarrer le service `nginx` et inspectez le nouveau message d'erreur dans `journalctl -xeu nginx.service`.
+
+   * Vérifiez les droits d'accès actuels du dossier `/var/log/nginx` et des fichiers qu'il contient (`ls -ld /var/log/nginx` et `ls -la /var/log/nginx`).
+
+4. **Rétablissement des droits et relance :**
+
+   * Appliquez les permissions `0755` sur le répertoire `/var/log/nginx` et `0640` sur les fichiers `.log` présents, en rétablissant le propriétaire légitime du démon web.
+
+   * Démarrez le service `nginx` et vérifiez son état.
+
+### 3.4 Configuration de la persistance de `systemd-journald`
+
+Afin de conserver l'historique des journaux en cas de redémarrage ultérieur des serveurs :
+
+1. Vérifiez l'espace disque actuellement utilisé par les journaux sur les nœuds avec `journalctl --disk-usage`.
+
+2. Modifiez le fichier `/etc/systemd/journald.conf` sur `node1` et `node2` pour activer :
+
+   * `Storage=persistent`
+
+   * `SystemMaxUse=200M`
+
+3. Créez le répertoire `/var/log/journal` s'il est absent, redémarrez le service `systemd-journald` et forcez l'écriture sur disque avec `journalctl --flush`.
+
+### 3.5 Documentation post-mortem
+
+Créez un fichier `~/diagnostic-j2s1/post-mortem.md` résumant pour `node1` et `node2` :
+
+* Le symptôme constaté.
+
+* La commande ayant permis d'isoler chacune des causes racines.
+
+* L'action corrective appliquée.
+
+## 4\. Critères de validation
+
+Exécutez les commandes de contrôle suivantes depuis le Master pour valider le rétablissement complet :
+
+```
+# 1. Verification de l'etat actif du service sur les deux noeuds
+ansible production_nodes -a "systemctl is-active nginx"
+
+# 2. Verification de l'absence d'unites en echec
+ansible production_nodes -a "systemctl --failed"
+
+# 3. Controle de l'ecoute du processus nginx sur le port 80
+ansible production_nodes -b -a "ss -tlpn 'sport = :80'"
+
+# 4. Controle de la persistance des journaux sur disque
+ansible production_nodes -a "ls -ld /var/log/journal"
+
+# 5. Test de reponse HTTP sur chaque cible
+curl -I http://192.168.4.101
+curl -I http://192.168.4.102
+
+```
+
+## Synthèse des livrables attendus
+
+| Élément contrôlé | Résultat attendu |
+| :---- | :---- |
+| État de l'unité `nginx` | Statut `active` sur `node1` et `node2`, zéro unité dans `systemctl --failed`. |
+| Écoute réseau port 80 | Processus `nginx` seul en écoute dans la sortie de `ss -tlpn`. |
+| Persistance `journald` | Répertoire `/var/log/journal` présent et alimenté sur les deux nœuds. |
+| Documentation | Fichier `~/diagnostic-j2s1/post-mortem.md` complété. |
+
+&nbsp;
