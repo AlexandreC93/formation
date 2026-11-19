@@ -1,0 +1,267 @@
+# Haute Disponibilité, répartition de charge (HAProxy) et VRRP (Keepalived)
+
+## 1\. Principes de la Haute Disponibilité et calcul de SLA
+
+Dans une infrastructure de production, un serveur unique hébergeant une application critique constitue un **point unique de défaillance** (*Single Point of Failure* ou **SPOF**). Une panne matérielle, une saturation mémoire ou un simple redémarrage pour mise à jour du noyau entraîne immédiatement une interruption de service pour les utilisateurs.
+
+La **Haute Disponibilité (HA)** vise à garantir la continuité de service en combinant deux mécanismes :
+
+1. **La redondance et répartition de charge (*Load Balancing*) :** Distribuer le trafic entrant sur plusieurs serveurs applicatifs actifs (`node1`, `node2`) et retirer automatiquement tout nœud défaillant.
+
+2. **La redondance du point d'entrée réseau (*Failover IP*) :** Partager une **adresse IP virtuelle flottante (VIP)** entre plusieurs répartiteurs afin que la perte d'un répartiteur soit compensée en moins d'une seconde.
+
+### 1.1 Mesure de la disponibilité et engagements de service (SLA)
+
+La disponibilité opérationnelle ($A$) d'un système se calcule à partir du temps moyen entre deux pannes (**MTBF**, *Mean Time Between Failures*) et du temps moyen de rétablissement (**MTTR**, *Mean Time To Repair*) :
+
+$$A = \frac{\text{MTBF}}{\text{MTBF} + \text{MTTR}}$$
+
+Les contrats de niveau de service (**SLA**, *Service Level Agreements*) définissent la durée maximale d'indisponibilité tolérée sur une année ou un mois :
+
+| Niveau de SLA | Taux de disponibilité | Indisponibilité maximale par an | Indisponibilité maximale par mois |
+| :---- | :---- | :---- | :---- |
+| **Deux neufs** | $99\%$ | $3\text{ jours } 15\text{ h } 39\text{ min}$ | $7\text{ h } 18\text{ min}$ |
+| **Trois neufs** | $99{,}9\%$ | $8\text{ h } 45\text{ min}$ | $43\text{ min } 49\text{ s}$ |
+| **Quatre neufs** | $99{,}99\%$ | $52\text{ min } 35\text{ s}$ | $4\text{ min } 23\text{ s}$ |
+| **Cinq neufs** | $99{,}999\%$ | $5\text{ min } 15\text{ s}$ | $26\text{ s}$ |
+
+## 2\. Répartition de charge avec HAProxy
+
+**HAProxy** (*High Availability Proxy*) est un répartiteur de charge et proxy inverse TCP/HTTP événementiel à très haute performance. Sa configuration dans `/etc/haproxy/haproxy.cfg` est structurée en quatre sections principales :
+
+* **`global` :** Paramètres du processus démon (journalisation, utilisateur système, chroot, et socket d'administration UNIX).
+
+* **`defaults` :** Valeurs par défaut appliquées aux sections suivantes (mode d'analyse, délais d'expiration *timeouts*).
+
+* **`frontend` :** Définit les adresses IP et ports d'écoute exposés aux clients externes (ex: port TCP `80` ou `443`), ainsi que les règles d'orientation du trafic.
+
+* **`backend` :** Définit le groupe (*pool*) de serveurs applicatifs réels (`node1`, `node2`), l'algorithme de répartition et les sondes de vérification de santé.
+
+### 2.1 Équilibrage Couche 4 (`mode tcp`) vs Couche 7 (`mode http`)
+
+* **`mode tcp` (Couche 4 OSI) :** HAProxy transfère les flux TCP bruts entre le client et le serveur cible sans inspecter le contenu applicatif. Ce mode est utilisé pour les bases de données (PostgreSQL, MariaDB), les flux chiffrés de bout en bout (TLS *Passthrough*) ou les protocoles non HTTP.
+
+* **`mode http` (Couche 7 OSI) :** HAProxy analyse l'intégralité de la requête HTTP. Cela lui permet d'inspecter ou de modifier les en-têtes (comme l'injection de `X-Forwarded-For` via `option forwardfor` pour transmettre l'IP réelle du client au serveur web), d'orienter les requêtes selon l'URL demandée et de vérifier les codes de retour HTTP.
+
+### 2.2 Algorithmes de répartition (`balance`)
+
+* **`roundrobin` :** Distribue les requêtes séquentiellement à chaque serveur actif à tour de rôle. Adapté lorsque les serveurs ont des capacités matérielles identiques et traitent des requêtes courtes.
+
+* **`leastconn` :** Envoie chaque nouvelle connexion vers le serveur ayant actuellement le plus petit nombre de connexions actives simultanées. Privilégié pour les requêtes longues ou les bases de données.
+
+* **`source` :** Applique un calcul de hachage sur l'adresse IP du client afin qu'un même client soit toujours dirigé vers le même serveur backend (tant que la topologie du pool ne change pas).
+
+### 2.3 Contrôles de santé actifs (*Health Checks*)
+
+HAProxy vérifie en continu l'état des serveurs du backend avant de leur transmettre du trafic :
+
+```
+option httpchk GET / HTTP/1.1\r\nHost:\ localhost
+server node1 192.168.4.101:80 check inter 2000 fall 3 rise 2
+
+```
+
+* **`check inter 2000` :** Exécute une vérification toutes les $2\,000\text{ ms}$ (2 secondes).
+
+* **`fall 3` :** Déclare le serveur hors service (`DOWN`) après **3 échecs consécutifs** et cesse immédiatement de lui envoyer du trafic client.
+
+* **`rise 2` :** Réintègre automatiquement le serveur dans le pool actif (`UP`) après **2 contrôles réussis consécutifs**.
+
+* **`option httpchk` :** Remplace le simple test d'ouverture de port TCP (couche 4\) par une véritable requête HTTP (couche 7\) exigeant une réponse valide (`HTTP 2xx` ou `3xx`).
+
+## 3\. Administration à chaud : La *Runtime API* de HAProxy
+
+En production, modifier le fichier `/etc/haproxy/haproxy.cfg` et redémarrer le démon pour sortir un serveur en maintenance est une mauvaise pratique. HAProxy intègre une interface d'administration à chaud accessible via une **socket de domaine UNIX** (`/run/haproxy/admin.sock` ou `/var/lib/haproxy/stats`).
+
+À l'aide de l'utilitaire **`socat`**, l'administrateur ou un playbook Ansible peut modifier instantanément l'état administratif d'un serveur backend parmi trois états :
+
+1. **`ready` :** État nominal. Le serveur reçoit les nouvelles connexions et répond aux contrôles de santé.
+
+2. **`drain` :** Mode d'évacuation douce. Le serveur **ne reçoit plus aucune nouvelle connexion**, mais HAProxy laisse se terminer proprement les sessions déjà en cours sur ce nœud.
+
+3. **`maint` :** Mode maintenance stricte. Le serveur est immédiatement isolé du trafic et les sondes de santé sont suspendues (évitant de générer des fausses alertes pendant l'intervention).
+
+## 4\. Redondance d'IP virtuelle avec Keepalived (Protocole VRRP)
+
+Pour éviter que le répartiteur HAProxy ne soit lui-même un SPOF, le démon **`keepalived`** met en œuvre le protocole standard **VRRP** (*Virtual Router Redundancy Protocol*, RFC 5798\) :
+
+1. **Partage d'une IP virtuelle (VIP) :** Une adresse IP dédiée au service (ex: `192.168.4.200/24`) est déclarée dans une instance VRRP identifiée par un `virtual_router_id` commun (compris entre 1 et 255).
+
+2. **Élection par priorité (`MASTER` / `BACKUP`) :** Le nœud possédant la priorité la plus élevée (ex: `priority 150` contre `priority 100`) devient **`MASTER`**, monte l'adresse VIP sur son interface réseau et émet toutes les secondes (`advert_int 1`) un paquet d'annonce VRRP (protocole IP numéro `112`, adresse multicast `224.0.0.18`).
+
+3. **Bascule automatique (*Failover*) et *Gratuitous ARP* :** Si le nœud `MASTER` tombe en panne ou si son démon local `haproxy` s'arrête (détecté via un bloc `vrrp_script` qui abaisse sa priorité), le nœud `BACKUP` ne reçoit plus d'annonce supérieure, passe à l'état `MASTER`, monte la VIP sur sa propre carte réseau et diffuse une trame **ARP gratuit** (*Gratuitous ARP*) pour mettre à jour la table MAC des commutateurs réseau.
+
+## 5\. Mémo technique opérationnel
+
+Cette section rassemble les commandes d'installation, les configurations de référence HAProxy / Keepalived et les commandes de pilotage de la socket d'administration sous Rocky Linux 9 et Debian 12\.
+
+### 5.1 Installation des paquets et prérequis noyau / SELinux
+
+Pour permettre à HAProxy de démarrer et de se lier (*bind*) à une adresse IP virtuelle (VIP) avant même que Keepalived ne l'ait activée localement, le paramètre noyau **`net.ipv4.ip_nonlocal_bind`** doit être activé. Sous Rocky Linux 9, le booléen SELinux `haproxy_connect_any` doit également être activé :
+
+```
+# --- SOUS ROCKY LINUX 9 / RHEL 9 ---
+dnf install -y haproxy keepalived socat psmisc
+setsebool -P haproxy_connect_any 1
+firewall-cmd --add-service=http --add-port=8404/tcp --add-protocol=vrrp --permanent
+firewall-cmd --reload
+
+# --- SOUS DEBIAN 12 / UBUNTU ---
+apt update
+apt install -y haproxy keepalived socat psmisc
+ufw allow 80/tcp 2>/dev/null || true
+ufw allow 8404/tcp 2>/dev/null || true
+
+# --- PARAMETRE NOYAU COMMUN (Autoriser le bind sur la VIP flottante) ---
+cat << 'EOF' > /etc/sysctl.d/99-haproxy-vip.conf
+net.ipv4.ip_nonlocal_bind = 1
+EOF
+sysctl --system
+
+```
+
+### 5.2 Configuration de référence HAProxy (`/etc/haproxy/haproxy.cfg`)
+
+```
+global
+    log /dev/log local0
+    maxconn 4096
+    user haproxy
+    group haproxy
+    daemon
+    # Socket d'administration Runtime API avec droits admin (niveau 660)
+    stats socket /run/haproxy/admin.sock mode 660 level admin expose-fd listeners
+    stats timeout 30s
+
+defaults
+    log     global
+    mode    http
+    option  httplog
+    option  dontlognull
+    retries 3
+    timeout http-request 10s
+    timeout queue        30s
+    timeout connect      5s
+    timeout client       30s
+    timeout server       30s
+
+# Ecoute du trafic HTTP client (Port 80)
+frontend front_web
+    bind 0.0.0.0:80
+    mode http
+    option forwardfor
+    default_backend back_web_prod
+
+# Pool des serveurs Web de production
+backend back_web_prod
+    mode http
+    balance roundrobin
+    option httpchk GET / HTTP/1.1\r\nHost:\ localhost
+    http-Response set-header X-Backend-Server %s
+    server node1 192.168.4.101:80 check inter 2000 fall 3 rise 2
+    server node2 192.168.4.102:80 check inter 2000 fall 3 rise 2
+
+# Page Web et supervision temps reel de HAProxy (Port 8404)
+listen stats
+    bind 0.0.0.0:8404
+    mode http
+    stats enable
+    stats uri /stats
+    stats refresh 5s
+    stats auth admin:HaproxyMCO#2026
+    stats admin if TRUE
+
+```
+
+*(Note : Assurez-vous que le répertoire `/run/haproxy` existe au démarrage du service via `mkdir -p /run/haproxy` ou `RuntimeDirectory=haproxy` dans l'unité systemd).*
+
+Validation syntaxique avant rechargement :
+
+```
+haproxy -c -f /etc/haproxy/haproxy.cfg
+systemctl enable --now haproxy
+
+```
+
+### 5.3 Configuration de référence Keepalived (`/etc/keepalived/keepalived.conf`)
+
+Identifiez d'abord le nom exact de l'interface réseau portant le réseau `192.168.4.0/24` (ex: `eth0`, `eth1`, `ens33` ou `enp0s3`) avec `ip -4 route show default` ou `ip -o -4 addr show`.
+
+```
+global_defs {
+    router_id LB_NODE_01
+    enable_script_security
+    script_user root
+}
+
+# Verification periodique de la presence du processus haproxy en memoire
+vrrp_script chk_haproxy {
+    script "/usr/bin/killall -0 haproxy"
+    interval 2
+    weight -60
+    fall 2
+    rise 2
+}
+
+vrrp_instance VI_MCO_WEB {
+    state MASTER
+    interface eth0
+    virtual_router_id 51
+    priority 150
+    advert_int 1
+
+    authentication {
+        auth_type PASS
+        auth_pass VrrpSecret26
+    }
+
+    virtual_ipaddress {
+        192.168.4.200/24 label eth0:vip
+    }
+
+    track_script {
+        chk_haproxy
+    }
+}
+
+```
+
+*(Sur un nœud secondaire `BACKUP`, les seules différences sont `router_id LB_NODE_02`, `state BACKUP` et `priority 100`. Si `haproxy` s'arrête sur le `MASTER`, le poids `weight -60` abaisse sa priorité de $150$ à $90$, ce qui permet au `BACKUP` de priorité $100$ de prendre immédiatement la VIP).*
+
+### 5.4 Commandes de pilotage à chaud via `socat` et diagnostic VRRP
+
+```
+# 1. Afficher l'etat de tous les serveurs du backend (UP, DOWN, MAINT, DRAIN)
+echo "show servers state back_web_prod" | socat stdio /run/haproxy/admin.sock
+
+# 2. Extraire un tableau lisible : Backend, Serveur, Statut (col 18) et Sessions (col 5)
+echo "show stat" | socat stdio /run/haproxy/admin.sock | cut -d',' -f1,2,5,18 | column -s',' -t
+
+# 3. Basculer node1 en mode DRAIN (fin des sessions en cours, plus de nouvelles requetes)
+echo "set server back_web_prod/node1 state drain" | socat stdio /run/haproxy/admin.sock
+
+# 4. Basculer node1 en mode MAINT (isolation immediate pour maintenance)
+echo "set server back_web_prod/node1 state maint" | socat stdio /run/haproxy/admin.sock
+
+# 5. Remettre node1 en production nominale (READY)
+echo "set server back_web_prod/node1 state ready" | socat stdio /run/haproxy/admin.sock
+
+# 6. Verifier que l'adresse IP virtuelle (VIP 192.168.4.200) est bien montee sur l'interface
+ip -4 -c addr show | grep 192.168.4.200
+
+# 7. Observer les annonces VRRP sur le reseau avec tcpdump
+tcpdump -nn -i any -c 5 proto 112
+
+```
+
+## Synthèse : Composants et états de l'architecture Haute Disponibilité
+
+| Composant / Commande | Rôle opérationnel |
+| :---- | :---- |
+| `net.ipv4.ip_nonlocal_bind = 1` | Autorise HAProxy à écouter sur une adresse VIP qui n'est pas encore active sur l'hôte. |
+| `haproxy -c -f /etc/haproxy/haproxy.cfg` | Valide la syntaxe du fichier de configuration HAProxy avant tout rechargement. |
+| `set server <backend>/<srv> state drain` | Évacue doucement un serveur via la socket UNIX sans couper les connexions actives. |
+| `set server <backend>/<srv> state maint` | Isole complètement un serveur du pool HAProxy pendant une opération de maintenance. |
+| `vrrp_script` (`killall -0 haproxy`) | Décrémente la priorité VRRP de Keepalived si le démon HAProxy local s'arrête. |
+
+&nbsp;

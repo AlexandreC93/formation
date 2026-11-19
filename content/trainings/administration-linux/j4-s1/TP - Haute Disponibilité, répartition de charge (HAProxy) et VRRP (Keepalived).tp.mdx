@@ -1,0 +1,182 @@
+# Haute Disponibilité, répartition de charge (HAProxy) et VRRP (Keepalived)
+
+## Objectifs
+
+Les serveurs web `node1` (`192.168.4.101`) et `node2` (`192.168.4.102`) hébergent désormais la même application de production, mais les utilisateurs accèdent encore directement à l'adresse IP de l'un ou l'autre serveur. Si `node1` tombe en panne ou subit une maintenance, tous les clients pointant vers `192.168.4.101` subissent une interruption de service.
+
+Vous devez mettre en place une architecture de **Haute Disponibilité (HA)** complète :
+
+1. Configurer **HAProxy** pour répartir le trafic HTTP (port 80\) en `roundrobin` entre `node1` et `node2` avec des contrôles de santé actifs (`option httpchk`) et une socket d'administration UNIX (`/run/haproxy/admin.sock`).
+
+2. Configurer **Keepalived** (protocole VRRP) pour exposer une **adresse IP virtuelle flottante (VIP : `192.168.4.200`)** en mode actif/passif entre le **Master** (`192.168.4.100`, rôle `MASTER` VRRP de priorité `150`) et **`node1`** (`192.168.4.101`, rôle `BACKUP` VRRP de priorité `100` sur un port ou une instance dédiée, ou vérification du basculement de la VIP).
+
+3. Piloter à chaud l'état des serveurs (`drain`, `maint`, `ready`) via `socat` et tester la tolérance aux pannes sans coupure pour les clients.
+
+Toutes les opérations sont conduites depuis le **Master** (`192.168.4.100`) dans le répertoire `~/tp-ha/`.
+
+*(Note d'architecture sur le Master : Si le serveur web Apache de Nagios occupe déjà le port TCP 80 sur toutes les interfaces `0.0.0.0:80` du Master, vous lierez le frontend HAProxy exclusivement à l'adresse IP virtuelle `bind 192.168.4.200:80` grâce au paramètre noyau `net.ipv4.ip_nonlocal_bind = 1`, permettant à Apache et HAProxy de cohabiter sur le port 80 sans conflit).*
+
+## 2\. Préparation des serveurs Web Backends (`node1` et `node2`)
+
+1. Créez le répertoire de travail `~/tp-ha/` sur le Master et copiez-y votre configuration Ansible :
+
+```
+mkdir -p ~/tp-ha
+cd ~/tp-ha
+cp ~/tp-ansible/ansible.cfg ~/tp-ansible/inventory.ini .
+
+```
+
+2. Afin d'identifier immédiatement quel serveur backend répond à chaque requête passant par la VIP, déployez via Ansible une page d'accueil distincte et assurez-vous que Nginx écoute sur le port `80` sur `node1` et `node2` :
+
+```
+ansible production_nodes -b -m ansible.builtin.shell -a '
+  for conf in /etc/nginx/conf.d/*.conf /etc/nginx/sites-available/*; do
+    [ -f "$conf" ] && sed -i "s/listen 8080/listen 80/g" "$conf" || true
+  done
+  echo "SERVEUR_BACKEND : $(hostname) ($(hostname -I | awk "{print \$1}"))" > /var/www/html/index.html
+  echo "SERVEUR_BACKEND : $(hostname) ($(hostname -I | awk "{print \$1}"))" > /usr/share/nginx/html/index.html 2>/dev/null || true
+  systemctl enable --now nginx
+  systemctl reload nginx
+'
+
+```
+
+3. Vérifiez depuis le Master que chaque nœud renvoie bien son propre identifiant sur le port 80 :
+
+```
+curl -s http://192.168.4.101
+curl -s http://192.168.4.102
+
+```
+
+## 3\. Déploiement et configuration de HAProxy sur le Master
+
+### 3.1 Installation et paramétrage du noyau (`ip_nonlocal_bind`)
+
+Sur le Master (`192.168.4.100`) :
+
+1. Installez les paquets **`haproxy`**, **`keepalived`**, **`socat`** et **`psmisc`** (fournissant `killall`).
+
+2. Activez le paramètre noyau `net.ipv4.ip_nonlocal_bind = 1` dans `/etc/sysctl.d/99-haproxy-vip.conf` et chargez-le avec `sysctl --system` afin que HAProxy puisse écouter sur la VIP `192.168.4.200` en permanence.
+
+3. Si votre Master est sous Rocky Linux 9 avec SELinux actif, autorisez HAProxy à se connecter au réseau avec `setsebool -P haproxy_connect_any 1` et ouvrez les flux `http`, `8404/tcp` et le protocole `vrrp` dans `firewalld`.
+
+### 3.2 Configuration du fichier `/etc/haproxy/haproxy.cfg`
+
+1. Assurez-vous que le dossier `/run/haproxy` existe et appartient à `haproxy:haproxy` (et ajoutez `d /run/haproxy 2775 haproxy haproxy -` dans `/etc/tmpfiles.d/haproxy.conf` puis lancez `systemd-tmpfiles --create` s'il n'est pas créé automatiquement).
+
+2. Éditez `/etc/haproxy/haproxy.cfg` en vous appuyant sur la section 5.2 du support de cours pour configurer :
+
+   * **Section `global` :** La socket d'administration `stats socket /run/haproxy/admin.sock mode 660 level admin expose-fd listeners`.
+
+   * **Section `frontend front_web` :** Écoute sur `bind 192.168.4.200:80` en `mode http`, avec `option forwardfor` et redirection vers `default_backend back_web_prod`.
+
+   * **Section `backend back_web_prod` :**
+
+     * Algorithme `balance roundrobin`.  
+     * Sonde HTTP active : `option httpchk GET / HTTP/1.1\r\nHost:\ localhost`.  
+     * En-tête de traçabilité : `http-response set-header X-Backend-Server %s`.  
+     * Serveurs `node1` (`192.168.4.101:80`) et `node2` (`192.168.4.102:80`) avec les paramètres `check inter 2000 fall 3 rise 2`.  
+   * **Section `listen stats` :** Écoute sur `bind 0.0.0.0:8404`, URI `/stats`, rafraîchissement `5s` et authentification `admin:HaproxyMCO#2026`.
+
+3. Validez la syntaxe de votre configuration avec `haproxy -c -f /etc/haproxy/haproxy.cfg`, puis activez et démarrez le service `haproxy`.
+
+## 4\. Mise en place de la VIP flottante avec Keepalived (VRRP)
+
+### 4.1 Configuration de Keepalived en `MASTER` sur le nœud Master
+
+1. Identifiez le nom exact de l'interface réseau du Master connectée au sous-réseau `192.168.4.0/24` :
+
+```
+ip -o -4 addr show | grep "192.168.4."
+
+```
+
+2. Rédigez le fichier `/etc/keepalived/keepalived.conf` sur le Master (en remplaçant `eth0` par le nom réel de votre interface relevé ci-dessus) :
+
+   * Un bloc `vrrp_script chk_haproxy` exécutant `"/usr/bin/killall -0 haproxy"` toutes les 2 secondes avec un impact `weight -60`.
+
+   * Une instance `vrrp_instance VI_MCO_WEB` configurée en `state MASTER`, `virtual_router_id 51`, `priority 150`, `advert_int 1`, mot de passe `VrrpSecret26`, portant l'adresse virtuelle `192.168.4.200/24` et suivant le script `chk_haproxy`.
+
+3. Activez et démarrez le service `keepalived` sur le Master, puis vérifiez que l'adresse IP virtuelle `192.168.4.200/24` est bien montée sur votre carte réseau avec `ip -4 -c addr show`.
+
+### 4.2 Déploiement d'un nœud Keepalived `BACKUP` sur `node1` via Ansible
+
+Afin de tester la bascule automatique (*Failover*) de l'adresse IP virtuelle `192.168.4.200` en cas d'arrêt de HAProxy sur le Master :
+
+1. Créez et exécutez un playbook `~/tp-ha/deploy_keepalived_backup.yml` ciblant `node1` (`become: true`) qui :
+
+   * Installe `keepalived` et autorise le protocole VRRP dans le pare-feu local de `node1`.
+
+   * Déploie `/etc/keepalived/keepalived.conf` sur `node1` avec la même instance `VI_MCO_WEB` (`virtual_router_id 51`, mot de passe `VrrpSecret26`, VIP `192.168.4.200/24` sur l'interface réseau de `node1`), mais configurée en **`state BACKUP`** avec une priorité de **`priority 100`** (sans `track_script` ou en suivant `nginx`).
+
+   * Démarre et active le service `keepalived` sur `node1`.
+
+2. Vérifiez avec `tcpdump -nn -i any -c 3 proto 112` sur le Master que les annonces VRRP sont bien émises sur le réseau et que le Master conserve la VIP (`priority 150` \> `100`).
+
+## 5\. Validation de la répartition de charge, de la Runtime API et du Failover
+
+### 5.1 Vérification du *Load Balancing* (`roundrobin`)
+
+Interrogez 6 fois de suite l'adresse IP virtuelle `http://192.168.4.200` depuis le Master :
+
+```
+for i in {1..6}; do curl -s http://192.168.4.200; done
+
+```
+
+Constatez l'alternance stricte des réponses entre `node1` et `node2`. Vérifiez également la présence de l'en-tête `X-Backend-Server` avec `curl -s -I http://192.168.4.200 | grep X-Backend-Server`.
+
+### 5.2 Pilotage à chaud via la socket UNIX (`socat`)
+
+Sans toucher au fichier `haproxy.cfg` ni recharger le service :
+
+1. Inspectez l'état actuel du pool via la socket d'administration :
+
+```
+echo "show stat" | sudo socat stdio /run/haproxy/admin.sock | grep -E "back_web_prod|node" | cut -d',' -f1,2,18
+
+```
+
+2. Basculez `node1` en mode maintenance (`maint`) à chaud :
+
+```
+echo "set server back_web_prod/node1 state maint" | sudo socat stdio /run/haproxy/admin.sock
+
+```
+
+3. Exécutez à nouveau la boucle de 6 requêtes `curl -s http://192.168.4.200` : vérifiez que **100 % des requêtes** sont désormais servies par `node2` sans aucune erreur client.
+
+4. Réintégrez `node1` en production (`ready`) via `socat` et vérifiez la reprise immédiate de l'alternance `roundrobin`.
+
+### 5.3 Test de tolérance aux pannes (*Health Check* et *Failover VRRP*)
+
+1. **Panne d'un serveur Web backend :**
+
+   * Arrêtez `nginx` sur `node2` via Ansible (`ansible node2 -b -a "systemctl stop nginx"`).
+
+   * Attendez 6 secondes (`inter 2000` $\times$ `fall 3`), vérifiez dans la socket HAProxy que `node2` est passé automatiquement à l'état **`DOWN`**, et constatez que `http://192.168.4.200` continue de répondre grâce à `node1`.
+
+   * Redémarrez `nginx` sur `node2` (`ansible node2 -b -a "systemctl start nginx"`) et vérifiez son retour automatique à l'état **`UP`** après 4 secondes (`rise 2`).
+
+2. **Bascule VRRP (*Failover* de la VIP) :**
+
+   * Arrêtez temporairement le démon `haproxy` sur le Master (`sudo systemctl stop haproxy`).
+
+   * Au bout de 4 secondes, le script `chk_haproxy` abaisse la priorité du Master de `150` à `90`.
+
+   * Vérifiez avec `ip -4 addr show` sur le Master et `ansible node1 -a "ip -4 addr show"` que la VIP `192.168.4.200` a basculé automatiquement sur l'interface réseau de `node1`, et que `curl http://192.168.4.200` répond toujours.
+
+   * Redémarrez `haproxy` sur le Master (`sudo systemctl start haproxy`) et vérifiez que le Master reprend automatiquement la VIP `192.168.4.200`.
+
+## Synthèse des livrables attendus
+
+| Élément contrôlé | Critère de validation |
+| :---- | :---- |
+| Configuration HAProxy | Validation `haproxy -c -f /etc/haproxy/haproxy.cfg` valide, socket `/run/haproxy/admin.sock` et page `:8404/stats` actives. |
+| Répartition sur la VIP | `curl http://192.168.4.200` alterne entre `node1` et `node2` avec l'en-tête `X-Backend-Server`. |
+| Pilotage Runtime API | Commandes `socat` (`state maint` / `state ready`) fonctionnelles sans coupure de service. |
+| Redondance VRRP Keepalived | VIP `192.168.4.200` active sur le Master, bascule sur `node1` si `haproxy` est coupé, puis retour sur le Master. |
+
+&nbsp;
