@@ -1,0 +1,245 @@
+# Conteneurisation, virtualisation et architecture Docker
+
+## 1\. De la machine physique à la machine virtuelle
+
+Pendant longtemps, déployer une application signifiait l'installer directement sur un serveur physique (on parle de *bare metal*). Pour éviter que deux applications n'entrent en conflit — par exemple une application qui exige Python 3.8 et une autre qui exige Python 3.12 — on dédiait un serveur par application. Le résultat était un gaspillage important de ressources matérielles (CPU et RAM largement sous-utilisés) et des délais longs pour approvisionner de nouvelles machines.
+
+La **virtualisation traditionnelle** a résolu ce problème en découpant un serveur physique en plusieurs **machines virtuelles (VMs)** indépendantes grâce à un logiciel appelé **hyperviseur**.
+
+On distingue deux types d'hyperviseurs :
+
+* **Type 1 (natif / bare metal)** : installé directement sur le matériel du serveur, sans système d'exploitation intermédiaire. C'est ce qu'on utilise en datacenter et chez les fournisseurs Cloud (VMware ESXi, KVM, Microsoft Hyper-V).
+
+* **Type 2 (hébergé)** : installé comme un logiciel classique par-dessus un système d'exploitation existant (VirtualBox, VMware Workstation, Parallels). Il sert surtout sur des postes de travail.
+
+### Les limites des machines virtuelles
+
+Chaque VM émule un matériel complet et embarque son propre système d'exploitation (son noyau, ses pilotes, ses bibliothèques système, ses services de fond). Cela entraîne plusieurs contraintes :
+
+* **Consommation de ressources** : une VM consomme de la RAM et plusieurs gigaoctets de disque avant même que l'application ne démarre.
+
+* **Temps de démarrage** : démarrer une VM revient à allumer un ordinateur complet, ce qui prend de quelques dizaines de secondes à plusieurs minutes.
+
+* **Maintenance** : chaque OS invité doit être mis à jour, sécurisé et supervisé individuellement.
+
+* **Portabilité imparfaite** : déplacer une image de VM de plusieurs gigaoctets d'un environnement à un autre reste lourd.
+
+## 2\. Les principes de la conteneurisation
+
+La conteneurisation part d'une autre approche : au lieu de virtualiser le matériel et de lancer un OS complet par application, **tous les conteneurs partagent le noyau (kernel) du système d'exploitation hôte**.
+
+Un conteneur n'est donc pas une « petite machine virtuelle ». Techniquement, c'est un **processus Linux classique**, mais isolé du reste du système.
+
+### Comment fonctionne l'isolation sous Linux
+
+Docker s'appuie directement sur deux fonctionnalités intégrées au noyau Linux :
+
+* **Les Namespaces (espaces de noms)** : ils définissent ce qu'un processus peut *voir*. Un conteneur dispose de son propre arbre de processus (`PID`), de ses propres interfaces réseau (`NET`), de son propre système de fichiers (`MNT`), de son propre nom d'hôte (`UTS`) et de ses propres utilisateurs (`USER`). À l'intérieur du conteneur, l'application a l'impression d'être seule sur la machine.
+
+* **Les cgroups (Control Groups)** : ils définissent ce qu'un processus peut *consommer*. Ils permettent de plafonner la mémoire vive (RAM), le temps processeur (CPU) ou les entrées/sorties disque d'un conteneur afin qu'une application défaillante ne fasse pas tomber toute la machine hôte.
+
+> **Remarque sur Windows et macOS :** Comme Docker s'appuie sur le noyau Linux, Docker Desktop (ou Rancher Desktop / OrbStack) lance en coulisses une machine virtuelle Linux très légère et transparente pour exécuter vos conteneurs sur Windows (via WSL2) ou macOS.
+
+### Les trois propriétés clés
+
+1. **Isolation** : chaque conteneur embarque ses propres dépendances (bibliothèques, binaires, runtime). Deux conteneurs peuvent exécuter deux versions différentes de Node.js, Python ou OpenSSL sur le même serveur sans aucun conflit.
+
+2. **Portabilité** : l'application et tout ce dont elle a besoin pour tourner sont regroupés dans un paquet standardisé (une image). Le comportement reste identique sur un poste portable, un serveur de test ou un serveur de production.
+
+3. **Immutabilité** : on ne se connecte pas dans un conteneur pour modifier du code ou installer un correctif à la main. Quand quelque chose change, on reconstruit une nouvelle image, on détruit l'ancien conteneur et on démarre le nouveau.
+
+## 3\. Conteneurs vs Machines Virtuelles
+
+| Critère | Machine Virtuelle (VM) | Conteneur |
+| :---- | :---- | :---- |
+| **Niveau de virtualisation** | Matériel (via hyperviseur) | Système d'exploitation (noyau partagé) |
+| **OS embarqué** | OS complet (noyau \+ espace utilisateur) | Espace utilisateur uniquement (fichiers et libs) |
+| **Poids typique** | Plusieurs Go | De quelques Mo à quelques centaines de Mo |
+| **Temps de démarrage** | Dizaines de secondes à minutes | Quelques millisecondes à quelques secondes |
+| **Isolation** | Très forte (noyaux séparés) | Forte (processus isolés sur un noyau partagé) |
+| **Densité par serveur** | Quelques dizaines | Plusieurs centaines |
+
+### Complémentarité et cas d'usage en entreprise
+
+Les conteneurs ne remplacent pas les VMs : **ils fonctionnent presque toujours ensemble**. En production, on déploie généralement des conteneurs *à l'intérieur* de machines virtuelles. La VM assure une barrière de sécurité matérielle entre différents clients ou environnements (par exemple production vs préproduction), tandis que les conteneurs apportent la rapidité de déploiement et la standardisation applicative.
+
+Cas d'usage courants :
+
+* **Standardiser les environnements de développement** : un nouveau développeur lance toute la pile technique (API, base de données, cache) en une commande sans rien installer en dur sur son poste.
+
+* **Découper une architecture en services** : chaque brique (authentification, facturation, interface web) tourne dans son propre conteneur avec son propre cycle de mise à jour.
+
+* **Exécuter des tests isolés** : lancer une base de données propre le temps d'une série de tests automatisés, puis la supprimer immédiatement.
+
+* **Moderniser des applications existantes** : empaqueter une application ancienne avec ses vieilles dépendances dans un conteneur pour la faire tourner sur un serveur récent sans tout réécrire.
+
+## 4\. Architecture de Docker
+
+Docker fonctionne sur un modèle **client-serveur**. Lorsque vous tapez une commande dans votre terminal, ce n'est pas la commande elle-même qui exécute le conteneur.
+
+```
++---------------+       API REST (Socket Unix / TCP)       +------------------------+
+|  Docker CLI   | ---------------------------------------> |  Docker Daemon         |
+|  (`docker`)   |                                          |  (`dockerd`)           |
++---------------+                                          +-----------+------------+
+                                                                       |
+                                                                       v
+                                                           +------------------------+
+                                                           |  containerd  ->  runc  |
+                                                           +-----------+------------+
+                                                                       |
+                                                                       v
+                                                           +------------------------+
+                                                           |  Conteneurs (Processus)|
+                                                           +------------------------+
+
+```
+
+Les composants principaux sont :
+
+* **Docker CLI (`docker`)** : l'outil en ligne de commande avec lequel vous interagissez. Il traduit vos commandes en requêtes envoyées au daemon via une API REST.
+
+* **Docker Daemon (`dockerd`)** : le service qui tourne en arrière-plan sur la machine hôte. Il gère les images, les conteneurs, les réseaux et les volumes.
+
+* **containerd et runc** : les composants bas niveau auxquels `dockerd` délègue le travail réel. `containerd` gère le cycle de vie des conteneurs et le téléchargement des images ; `runc` communique directement avec le noyau Linux pour créer les namespaces et les cgroups.
+
+* **Registry (registre)** : un serveur qui stocke et distribue les images Docker. Par défaut, Docker va chercher les images publiques sur **Docker Hub**.
+
+### Ne pas confondre Image et Conteneur
+
+* **Une image** est un modèle figé en lecture seule. Elle contient le système de fichiers de l'application, ses dépendances et la commande à lancer par défaut.
+
+* **Un conteneur** est une instance vivante d'une image. Quand Docker démarre un conteneur, il ajoute une fine couche en lecture/écriture par-dessus l'image. On peut lancer dix conteneurs indépendants à partir d'une seule et même image.
+
+## 5\. Cycle de vie et commandes essentielles
+
+Un conteneur suit un cycle de vie simple : il est créé (`created`), lancé (`running`), éventuellement mis en pause (`paused`), arrêté (`exited`), puis supprimé.
+
+Un point important à retenir : **un conteneur ne reste actif que tant que son processus principal (PID 1\) est en cours d'exécution**. Si vous lancez un conteneur qui affiche un message et se termine aussitôt, le conteneur passe immédiatement à l'état `Exited`. Un serveur web comme Nginx reste actif parce que son processus tourne en continu en attente de requêtes.
+
+### Vérifier l'environnement
+
+```
+# Afficher les versions du client (CLI) et du serveur (daemon)
+docker version
+
+# Afficher les statistiques globales (conteneurs, images, CPU, RAM disponibles)
+docker info
+
+```
+
+### Lancer un conteneur (`docker run`)
+
+La commande `docker run` télécharge l'image si elle n'est pas présente en local (`docker pull`), crée le conteneur (`docker create`) et le démarre (`docker start`).
+
+```
+docker run [OPTIONS] NOM_IMAGE[:TAG] [COMMANDE]
+
+```
+
+Les options indispensables à connaître :
+
+| Option | Rôle | Exemple |
+| :---- | :---- | :---- |
+| `-d` | Lance le conteneur en arrière-plan (*detached*) | `docker run -d nginx` |
+| `--name` | Attribue un nom lisible au conteneur | `--name mon-web` |
+| `-p` | Relie un port de votre machine à un port du conteneur (`hote:conteneur`) | `-p 8080:80` |
+| `-e` | Passe une variable d'environnement au conteneur | `-e APP_ENV=dev` |
+| `-it` | Ouvre un terminal interactif dans le conteneur | `docker run -it alpine sh` |
+| `--rm` | Supprime automatiquement le conteneur dès qu'il s'arrête | `docker run --rm hello-world` |
+| `--memory` | Limite la mémoire RAM utilisable (cgroup) | `--memory="128m"` |
+| `--cpus` | Limite le nombre de cœurs CPU utilisables (cgroup) | `--cpus="0.5"` |
+
+Exemple complet : démarrer un serveur web Nginx en arrière-plan, nommé `web-demo`, accessible sur le port `8080` de la machine locale, avec une limite de 128 Mo de RAM :
+
+```
+docker run -d --name web-demo -p 8080:80 --memory="128m" nginx:alpine
+
+```
+
+### Lister les conteneurs et les images
+
+```
+# Lister uniquement les conteneurs en cours d'exécution
+docker ps
+
+# Lister tous les conteneurs (y compris ceux qui sont arrêtés)
+docker ps -a
+
+# Lister les images téléchargées localement
+docker images
+
+```
+
+### Observer, inspecter et diagnostiquer
+
+```
+# Afficher les journaux (sortie standard et erreur) d'un conteneur
+docker logs web-demo
+
+# Suivre les logs en temps réel (Ctrl+C pour quitter sans arrêter le conteneur)
+docker logs -f web-demo
+
+# Afficher toute la configuration détaillée d'un conteneur au format JSON
+# (adresse IP, variables d'environnement, limites mémoire, état, ports...)
+docker inspect web-demo
+
+# Extraire une valeur précise depuis docker inspect (exemple : l'adresse IP)
+docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' web-demo
+
+# Afficher la consommation CPU, RAM et réseau en temps réel
+docker stats
+
+# Obtenir un instantané unique de la consommation sans rafraîchissement continu
+docker stats --no-stream
+
+# Voir les processus qui tournent à l'intérieur du conteneur
+docker top web-demo
+
+```
+
+### Exécuter une commande dans un conteneur actif
+
+Pour diagnostiquer un problème ou vérifier des fichiers dans un conteneur déjà démarré, on utilise `docker exec` :
+
+```
+# Ouvrir un shell interactif dans un conteneur basé sur Alpine Linux
+docker exec -it web-demo sh
+
+# Exécuter une commande ponctuelle sans entrer dans un shell
+docker exec web-demo env
+
+```
+
+> **Attention :** Sur une image légère comme `alpine`, `bash` n'est généralement pas installé ; utilisez `sh`. Pour sortir du shell sans arrêter le conteneur, tapez `exit`.
+
+### Arrêter, redémarrer et nettoyer
+
+```
+# Arrêter proprement un conteneur (envoie le signal SIGTERM, puis SIGKILL après 10s)
+docker stop web-demo
+
+# Redémarrer un conteneur arrêté
+docker start web-demo
+
+# Supprimer un conteneur arrêté
+docker rm web-demo
+
+# Forcer l'arrêt et la suppression en une seule commande
+docker rm -f web-demo
+
+# Supprimer tous les conteneurs arrêtés d'un coup
+docker container prune
+
+# Supprimer une image locale (uniquement si aucun conteneur ne l'utilise)
+docker rmi nginx:alpine
+
+```
+
+Tout ce que vous manipulez en local avec la CLI Docker se retrouve sous une forme équivalente chez les fournisseurs Cloud :
+
+* **Machines virtuelles** : ce que vous lancez en local avec VirtualBox correspond à **AWS EC2**, **Azure Virtual Machines**, **Google Compute Engine** ou **Scaleway Instances**.
+
+* **Exécution directe de conteneurs** : en production dans le Cloud, on évite de se connecter en SSH sur une VM pour taper `docker run` à la main. On utilise des services managés où l'on fournit simplement le nom de l'image, les ports exposés, les variables d'environnement (`-e`) et les limites de ressources (`--memory`, `--cpus`). C'est le fonctionnement d'**AWS Fargate**, **Google Cloud Run**, **Azure Container Instances** ou **Scaleway Serverless Containers**.
+
+* **Logs et métriques** : les commandes `docker logs` et `docker stats` qui servent en local sont remplacées dans le Cloud par des collecteurs centralisés (CloudWatch Logs, Azure Monitor, Cloud Logging) afin de conserver l'historique même si un conteneur est détruit.

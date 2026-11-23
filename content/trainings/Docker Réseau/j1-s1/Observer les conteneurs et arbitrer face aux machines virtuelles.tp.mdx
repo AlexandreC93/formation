@@ -1,0 +1,293 @@
+# Observer les conteneurs et arbitrer face aux machines virtuelles
+
+## Objectifs
+
+* Comprendre concrètement comment Docker exécute une application.  
+* Mesurer la taille, le temps de démarrage et la consommation mémoire d'un conteneur pour les comparer à ceux d'une machine virtuelle.  
+* Constater les effets de l'isolation, de l'immutabilité et du plafonnement des ressources sur la stabilité d'un projet.  
+* Arbitrer entre machines virtuelles, conteneurs et services Cloud managés sur des situations d'entreprise.
+
+> **Mode d'emploi :** toutes les commandes à lancer dans votre terminal sont fournies et expliquées ci-dessous. Votre travail consiste à exécuter chaque étape, observer ce qui se passe à l'écran et répondre aux questions d'analyse.
+
+---
+
+## Étape 1 : Vérifier le moteur Docker et comprendre le cycle de vie
+
+Avant de lancer une application, vérifions que le client Docker (votre terminal) communique bien avec le serveur Docker (le *daemon* qui gère les conteneurs en arrière-plan).
+
+### 1.1 Vérifier la connexion client / serveur
+
+Exécutez les deux commandes suivantes l'une après l'autre :
+
+```sh
+docker version
+```
+
+&nbsp;
+
+```sh
+docker info
+```
+
+* **`docker version`** affiche séparément la partie `Client` et la partie `Server`. Si les deux blocs apparaissent, le moteur Docker fonctionne.  
+* **`docker info`** affiche les ressources matérielles disponibles pour vos conteneurs (notamment les lignes `CPUs` et `Total Memory`).
+
+**À relever :**
+
+1. Combien de processeurs (`CPUs`) et combien de mémoire (`Total Memory`) sont mis à disposition de Docker sur votre poste ?
+
+### 1.2 Lancer un premier conteneur éphémère
+
+Lancez maintenant l'image de test officielle de Docker :
+
+```sh
+docker run hello-world
+```
+
+Cette commande télécharge automatiquement l'image `hello-world` depuis Docker Hub (si elle n'est pas déjà sur votre poste), démarre un conteneur, affiche un message de bienvenue, puis se termine.
+
+Vérifiez ensuite la liste des conteneurs actifs, puis la liste de tous les conteneurs (y compris ceux qui sont arrêtés) :
+
+```sh
+docker ps
+```
+
+&nbsp;
+
+```sh
+docker ps -a
+```
+
+**Questions d'analyse :** 2\. Pourquoi le conteneur `hello-world` n'apparaît-il pas dans `docker ps`, mais apparaît-il avec le statut `Exited` dans `docker ps -a` ? 3\. Contrairement à une machine virtuelle qui reste allumée tant qu'on ne l'éteint pas, à quel moment un conteneur s'arrête-t-il automatiquement ?
+
+---
+
+## Étape 2 : Comparer l'empreinte d'un conteneur et d'une machine virtuelle
+
+Vous allez démarrer deux serveurs web indépendants à partir d'une seule et même image légère (`nginx:alpine`), puis mesurer leur poids réel.
+
+### 2.1 Démarrer deux serveurs web en quelques secondes
+
+Lancez le premier serveur web :
+
+```sh
+docker run -d --name web-1 -p 8080:80 nginx:alpine
+```
+
+Décryptage de cette commande :
+
+* `-d` : lance le conteneur en arrière-plan pour vous rendre la main dans le terminal ;  
+* `--name web-1` : lui donne un nom facile à reconnaître ;  
+* `-p 8080:80` : rend le port interne `80` du conteneur accessible sur le port `8080` de votre poste ;  
+* `nginx:alpine` : indique l'image à utiliser (serveur web Nginx sur une base Linux très légère).
+
+Ouvrez votre navigateur à l'adresse `http://localhost:8080`. Vous devez voir la page d'accueil *"Welcome to nginx\!"*.
+
+Lancez ensuite un second serveur web à partir de la même image, cette fois sur le port `8081` :
+
+```sh
+docker run -d --name web-2 -p 8081:80 nginx:alpine
+```
+
+Vérifiez dans votre navigateur que `http://localhost:8081` répond également.
+
+### 2.2 Mesurer la taille, la mémoire et consulter les journaux
+
+Exécutez les trois commandes d'observation suivantes :
+
+```sh
+# Afficher la taille de l'image téléchargée sur le disque
+docker images nginx:alpine
+```
+
+&nbsp;
+
+```sh
+# Afficher la consommation réelle CPU et RAM de chaque conteneur actif
+docker stats --no-stream
+```
+
+&nbsp;
+
+```sh
+# Consulter les journaux d'activité (logs) du premier serveur
+docker logs web-1
+```
+
+### 2.3 Tableau comparatif et analyse
+
+À l'aide des valeurs relevées dans votre terminal et des ordres de grandeur vus dans le cours pour une machine virtuelle traditionnelle, complétez le tableau suivant :
+
+| Indicateur | Machine virtuelle classique (rappel cours) | Conteneur `nginx:alpine` (mesuré) |
+| :---- | :---- | :---- |
+| **Taille de l'image sur disque** | Plusieurs Go |  |
+| **Temps de démarrage** | Dizaines de secondes à minutes |  |
+| **Mémoire RAM consommée (1 instance)** | 512 Mo à plusieurs Go |  |
+| **Stockage nécessaire pour 2 instances** | 2 × taille complète d'un OS | *(image partagée)* |
+
+**Questions d'analyse :**
+
+1. L'image `nginx:alpine` est-elle stockée une fois ou deux fois sur le disque alors que `web-1` et `web-2` tournent en parallèle ?  
+2. Si votre organisation doit héberger 20 petits services web, quel est l'impact concret de cette différence sur le nombre de serveurs à louer et sur la facture d'hébergement ?  
+3. En regardant la sortie de `docker logs web-1`, voyez-vous trace de votre visite dans le navigateur ? En quoi cette commande facilite-t-elle le diagnostic d'un incident ?
+
+---
+
+## Étape 3 : Constater l'isolation et l'immutabilité
+
+Deux propriétés structurent le fonctionnement d'un projet conteneurisé : l'**isolation** entre services et l'**immutabilité** des déploiements. Vous allez les vérifier concrètement.
+
+### 3.1 Vérifier l'isolation entre `web-1` et `web-2`
+
+La commande `docker exec` permet d'exécuter une action ponctuelle à l'intérieur d'un conteneur déjà démarré. Regardez ce que voit `web-1` depuis son propre point de vue :
+
+```sh
+# Voir les processus visibles à l'intérieur de web-1
+docker exec web-1 ps
+```
+
+&nbsp;
+
+```sh
+# Voir le nom d'hôte (hostname) interne de web-1
+docker exec web-1 hostname
+```
+
+Modifiez maintenant la page d'accueil directement à l'intérieur de `web-1` :
+
+```sh
+docker exec web-1 sh -c "echo '<h1>Modification manuelle sur web-1</h1>' > /usr/share/nginx/html/index.html"
+```
+
+Rechargez les deux onglets de votre navigateur :
+
+* `http://localhost:8080` (`web-1`)  
+* `http://localhost:8081` (`web-2`)
+
+### 3.2 Vérifier l'immutabilité lors d'une recréation
+
+Simulez maintenant une panne ou une mise à jour : supprimez `web-1`, puis recréez-le à l'identique depuis son image d'origine :
+
+```sh
+# Arrêter et supprimer web-1
+docker rm -f web-1
+```
+
+&nbsp;
+
+```sh
+# Recréer web-1 depuis la même image
+docker run -d --name web-1 -p 8080:80 nginx:alpine
+```
+
+Rechargez `http://localhost:8080` dans votre navigateur.
+
+**Questions d'analyse :**
+
+1. Lors de la modification sur `web-1`, la page de `web-2` a-t-elle changé ? Que garantit cette isolation lorsque plusieurs applications d'une entreprise tournent sur le même serveur physique ?  
+2. Qu'est devenue votre modification manuelle après la recréation de `web-1` ?  
+3. Dans un projet informatique, pourquoi le fait de ne pas pouvoir conserver des « bricolages manuels » sur un conteneur en production est-il un avantage pour la fiabilité et les retours arrière ?  
+4. Quelle mauvaise pratique faut-il donc interdire aux équipes sur des conteneurs en production, et quelle est la bonne manière d'appliquer un changement ?
+
+---
+
+## Étape 4 : Paramétrer et plafonner un conteneur
+
+Sur un même serveur partagé, une application qui rencontre un bug (par exemple une fuite mémoire) ne doit pas faire tomber les autres services. Docker permet aussi d'injecter des paramètres de configuration depuis l'extérieur sans modifier l'image.
+
+### 4.1 Lancer un conteneur configuré et plafonné
+
+Exécutez la commande suivante :
+
+```sh
+docker run -d \
+  --name web-limite \
+  -p 8082:80 \
+  -e APP_ENV=recette \
+  -e APP_VERSION=1.0 \
+  --memory="64m" \
+  --cpus="0.5" \
+  nginx:alpine
+```
+
+Décryptage des nouvelles options :
+
+* `-e APP_ENV=recette` et `-e APP_VERSION=1.0` : injectent des **variables d'environnement** (configuration externe) au démarrage du conteneur ;  
+* `--memory="64m"` : plafonne la mémoire vive maximale utilisable par ce conteneur à 64 Mo ;  
+* `--cpus="0.5"` : limite ce conteneur à la moitié d'un cœur processeur.
+
+### 4.2 Vérifier la configuration et les limites appliquées
+
+```sh
+# Afficher les variables d'environnement reçues par web-limite
+docker exec web-limite env
+```
+
+&nbsp;
+
+```sh
+# Comparer la limite mémoire (colonne LIMIT) entre web-1, web-2 et web-limite
+docker stats --no-stream
+```
+
+**Questions d'analyse :**
+
+1. Repérez la colonne `MEM USAGE / LIMIT` dans `docker stats` : quelle différence observez-vous entre `web-limite` et `web-1` ?  
+2. Pourquoi est-il préférable de passer `APP_ENV=recette` (ou une adresse de base de données) en variable d'environnement plutôt que de l'écrire en dur dans le code de l'application ?  
+3. Quel risque d'infrastructure évite-t-on en imposant systématiquement des plafonds de CPU et de RAM (`--memory`, `--cpus`) aux conteneurs d'un projet ?
+
+---
+
+## Étape 5 : Nettoyer son environnement
+
+Pour libérer les ports et la mémoire de votre poste, supprimez les conteneurs créés pendant ce TP :
+
+```sh
+# Arrêter et supprimer les trois serveurs web
+docker rm -f web-1 web-2 web-limite
+```
+
+&nbsp;
+
+```sh
+# Supprimer les conteneurs déjà arrêtés (comme hello-world)
+docker container prune -f
+```
+
+&nbsp;
+
+```sh
+# Vérifier qu'il ne reste plus aucun conteneur
+docker ps -a
+```
+
+---
+
+## Étape 6 : Étude de cas — Choisir la bonne approche sur un projet
+
+Pour chaque cas, indiquez la solution la plus pertinente (**Machines virtuelles classiques**, **Conteneurs hébergés dans des VMs**, ou **Service Cloud managé pour conteneurs**) et justifiez votre réponse en 2 ou 3 points concrets.
+
+### Situation 1 : Harmoniser les environnements d'une équipe de développement
+
+Une équipe de huit développeurs travaille sur une application composée d'une interface web, d'une API et d'une base de données. À chaque arrivée d'un nouveau membre, il faut deux jours pour installer les bons outils sur son ordinateur, et des bugs apparaissent en recette parce que les versions de bibliothèques diffèrent entre les postes et le serveur.
+
+* **Choix recommandé et justification :**
+
+### Situation 2 : Maintenir un progiciel ancien sous Windows
+
+L'entreprise utilise un logiciel comptable acheté il y a dix ans auprès d'un éditeur externe. Il fonctionne uniquement sur Windows Server, nécessite un système d'exploitation complet et une forte isolation matérielle, et n'est mis à jour qu'une fois par an.
+
+* **Choix recommandé et justification :**
+
+### Situation 3 : Lancer une nouvelle application web dans le Cloud sans équipe système dédiée
+
+Une petite équipe souhaite mettre en ligne rapidement une nouvelle application conteneurisée. Elle veut éviter de gérer des serveurs Linux, des mises à jour d'OS et des commandes `docker run` manuelles, tout en gardant un contrôle clair sur les ressources consommées.
+
+* **Choix recommandé et justification :**
+
+### Lien avec le déploiement Cloud
+
+En reprenant l'exemple du conteneur `web-limite` de l'étape 4 sur un service Cloud managé (comme **AWS Fargate**, **Google Cloud Run**, **Azure Container Instances** ou **Scaleway Serverless Containers**) :
+
+1. Parmi les éléments utilisés à l'étape 4 (nom d'image `nginx:alpine`, port, variables `-e`, limites `--memory` et `--cpus`), lesquels servent directement à paramétrer le service dans la console Cloud et à estimer son coût ?  
+2. Si le fournisseur Cloud redémarre automatiquement ce conteneur suite à une panne matérielle, que deviendrait une modification de fichier effectuée manuellement dans le conteneur (comme à l'étape 3\) ?
