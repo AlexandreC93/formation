@@ -1,0 +1,264 @@
+# Multi-conteneurs avec Docker Compose
+
+## 1\. Pourquoi utiliser Docker Compose
+
+Une application réelle tourne rarement dans un seul conteneur. Même un projet simple regroupe souvent au moins trois briques :
+
+* un **reverse proxy** (Nginx, Traefik) qui reçoit les requêtes HTTP ;  
+* une **API applicative** (Python, Node.js, Java) qui porte la logique métier ;  
+* une **base de données** (PostgreSQL, MySQL, Redis) qui stocke les données.
+
+Lancer cette architecture avec `docker run` oblige à enchaîner plusieurs commandes longues : créer les réseaux à la main, créer les volumes, démarrer les conteneurs dans le bon ordre et ne pas se tromper dans les options `-e`, `-p`, `-v` ou `--network`. Dès qu'il faut partager le projet avec un collègue ou tout relancer après une modification, cette approche devient vite pénible et source d'erreurs.
+
+**Docker Compose** résout ce problème avec une approche **déclarative** : vous décrivez l'ensemble de votre architecture (services, réseaux, volumes, variables d'environnement) dans un seul fichier texte nommé `compose.yaml` (ou `docker-compose.yml`). Une seule commande suffit ensuite pour démarrer, inspecter ou détruire toute la pile.
+
+> **Remarque :** Docker Compose est aujourd'hui directement intégré à la CLI Docker sous la forme `docker compose` (avec un espace). L'ancienne commande `docker-compose` (avec un tiret) correspond à la version 1, désormais abandonnée.
+
+## 2\. La persistance des données : volumes et bind mounts
+
+Par défaut, tout ce qui est écrit à l'intérieur d'un conteneur est stocké dans sa couche supérieure en lecture/écriture. Si le conteneur est supprimé (`docker rm`), toutes ces données disparaissent définitivement. Pour une API sans état (*stateless*), c'est exactement ce que l'on veut. Pour une base de données, c'est évidemment inacceptable.
+
+Docker propose deux mécanismes principaux pour stocker des données en dehors du cycle de vie d'un conteneur :
+
+### Les volumes nommés (Named Volumes)
+
+Un volume nommé est un espace de stockage créé et géré directement par Docker sur la machine hôte (généralement dans `/var/lib/docker/volumes/`).
+
+* **Cycle de vie indépendant** : vous pouvez arrêter, supprimer et recréer un conteneur PostgreSQL, il retrouvera toutes ses tables en se rattachant au même volume.  
+* **Portabilité** : fonctionne de manière identique sur Linux, macOS et Windows sans problème de droits d'accès sur les fichiers.  
+* **Usage typique** : bases de données, fichiers générés par l'application, données d'état d'un service.
+
+### Les montages liés (Bind Mounts)
+
+Un bind mount relie directement un fichier ou un dossier précis de votre machine hôte à un chemin dans le conteneur (par exemple `./nginx/default.conf:/etc/nginx/conf.d/default.conf`).
+
+* **Modification en direct** : toute modification faite sur votre poste est immédiatement visible dans le conteneur, et inversement.  
+* **Mode lecture seule** : on peut ajouter `:ro` (*read-only*) à la fin du montage pour empêcher le conteneur de modifier un fichier de configuration.  
+* **Usage typique** : injecter un fichier de configuration personnalisé (Nginx, Prometheus) ou monter le code source pendant le développement local.
+
+### Comparaison rapide
+
+| Critère | Volume nommé | Bind mount |
+| :---- | :---- | :---- |
+| **Géré par** | Docker | L'utilisateur (chemin sur l'hôte) |
+| **Syntaxe** | `pgdata:/var/lib/postgresql/data` | `./nginx.conf:/etc/nginx/conf.d/default.conf:ro` |
+| **Cas d'usage** | Bases de données, persistance durable | Fichiers de configuration, code en dev |
+
+### Commandes CLI utiles sur les volumes
+
+```sh
+# Lister les volumes existants
+docker volume ls
+
+# Voir les détails d'un volume (chemin sur l'hôte, labels)
+docker volume inspect mon-volume
+
+# Supprimer un volume qui n'est utilisé par aucun conteneur
+docker volume rm mon-volume
+```
+
+## 3\. Les réseaux Docker et l'isolation
+
+Quand plusieurs conteneurs doivent communiquer entre eux, ils passent par un réseau virtuel géré par Docker.
+
+### Résolution DNS intégrée
+
+Si vous créez un **réseau bridge personnalisé** (ce que Docker Compose fait automatiquement pour chaque projet), Docker active un serveur DNS interne sur ce réseau.
+
+Cela signifie que vous n'avez **jamais besoin de connaître l'adresse IP d'un conteneur** (qui change de toute façon à chaque redémarrage). Si un service s'appelle `db` dans votre fichier `compose.yaml`, votre API peut simplement se connecter à l'hôte `db` sur le port `5432`.
+
+### Segmenter les réseaux pour limiter l'exposition
+
+Mettre tous les conteneurs sur le même réseau fonctionne, mais ce n'est pas propre sur le plan architectural. Dans une application web classique :
+
+* le reverse proxy (`nginx`) doit pouvoir parler à l'`api`, mais il n'a aucune raison de pouvoir contacter la base de données (`db`) ;  
+* la base de données (`db`) doit uniquement être joignable par l'`api`, et **ne doit exposer aucun port sur votre machine hôte** (pas de section `ports:` sur la BDD).
+
+On crée donc deux réseaux distincts :
+
+```
+  Navigateur / curl
+         |
+     (port 8080)
+         v
+   +-----------+        réseau: frontend        +-----------+
+   |   nginx   | -----------------------------> |    api    |
+   +-----------+                                +-----+-----+
+                                                      |
+                                               réseau: backend
+                                                      |
+                                                      v
+                                                +-----------+
+                                                |    db     |
+                                                +-----------+
+```
+
+Dans ce schéma :
+
+* `nginx` est uniquement sur `frontend` ;  
+* `db` est uniquement sur `backend` ;  
+* `api` est rattachée aux deux réseaux (`frontend` et `backend`) et joue le rôle d'intermédiaire.
+
+Si un attaquant compromettait `nginx`, il ne pourrait même pas atteindre le port `5432` de `db` sur le réseau.
+
+### Différence entre `ports` et `expose`
+
+* `ports: ["8080:80"]` publie le port `80` du conteneur sur le port `8080` de la machine hôte (accessible depuis l'extérieur via `localhost:8080`).  
+* `expose: ["5000"]` (ou l'absence de `ports`) rend le port accessible uniquement aux autres conteneurs situés sur le même réseau Docker, sans rien ouvrir sur l'hôte.
+
+## 4\. Anatomie d'un fichier `compose.yaml`
+
+Un fichier `compose.yaml` est écrit en **YAML** (attention à l'indentation par espaces, jamais de tabulations). Depuis Compose v2, la ligne `version: "3.8"` en haut du fichier n'est plus nécessaire.
+
+Il s'articule autour de trois blocs de premier niveau : `services`, `networks` et `volumes`.
+
+### Exemple complet : Reverse Proxy \+ API \+ PostgreSQL
+
+```yaml
+services:
+  proxy:
+    image: nginx:1.27-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - frontend
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  api:
+    build: ./api
+    environment:
+      APP_VERSION: "2.0"
+      DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}"
+    networks:
+      - frontend
+      - backend
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+networks:
+  frontend:
+  backend:
+
+volumes:
+  pgdata:
+```
+
+&nbsp;
+
+### Explication des directives clés
+
+* **`build` vs `image`** : `image` télécharge une image existante depuis un registre (`postgres:16-alpine`). `build: ./api` indique à Compose de construire l'image localement à partir du `Dockerfile` présent dans le dossier `./api`.  
+* **`depends_on` et `healthcheck`** : si vous écrivez simplement `depends_on: [db]`, Compose démarre `db` avant `api`, mais n'attend pas que PostgreSQL ait fini de s'initialiser. L'API risque alors de planter au démarrage avec une erreur *Connection refused*. En ajoutant un **`healthcheck`** sur `db` et `condition: service_healthy` dans `depends_on`, Compose attend que la commande `pg_isready` réussisse avant de lancer `api`.  
+* **`restart`** : définit la politique de redémarrage si un conteneur s'arrête suite à une erreur (`no`, `always`, `on-failure`, `unless-stopped`). `unless-stopped` redémarre le conteneur automatiquement sauf si vous l'avez explicitement arrêté.  
+* **Interpolation `.env`** : les expressions `${POSTGRES_USER}` sont remplacées automatiquement par les valeurs lues dans un fichier `.env` placé dans le même dossier que `compose.yaml`. Ce fichier `.env` ne doit jamais être commité dans Git (on versionne à la place un fichier `.env.example` contenant des valeurs fictives).
+
+### Configuration d'un reverse proxy Nginx simple
+
+Pour que Nginx redirige les requêtes entrantes vers le conteneur `api` sur son port interne `5000`, il suffit d'un fichier `./nginx/default.conf` minimaliste :
+
+```nginx
+server {
+    listen 80;
+
+    location / {
+        proxy_pass http://api:5000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+&nbsp;
+
+Remarquez l'utilisation de `http://api:5000` : Nginx résout le nom `api` grâce au DNS interne du réseau `frontend`.
+
+## 5\. Commandes essentielles de Docker Compose
+
+Toutes ces commandes s'exécutent depuis le dossier contenant le fichier `compose.yaml`.
+
+### Démarrer et reconstruire la pile
+
+```sh
+# Construire les images si besoin, créer les réseaux/volumes et lancer en arrière-plan
+docker compose up -d
+
+# Forcer la reconstruction des images après une modification de code ou de Dockerfile
+docker compose up -d --build
+```
+
+### Observer et diagnostiquer
+
+```sh
+# Lister les conteneurs du projet, leur état (running, healthy...) et leurs ports
+docker compose ps
+
+# Suivre les logs de tous les services en même temps
+docker compose logs -f
+
+# Suivre les logs d'un seul service
+docker compose logs -f api
+
+# Vérifier le fichier compose.yaml final après résolution des variables du .env
+docker compose config
+```
+
+### Interagir avec un service
+
+```sh
+# Exécuter une commande dans un service actif (exemple : ouvrir psql dans le service db)
+docker compose exec db psql -U monuser -d mabase
+
+# Ouvrir un shell dans le service proxy
+docker compose exec proxy sh
+```
+
+### Arrêter et nettoyer
+
+```sh
+# Arrêter les conteneurs sans les supprimer
+docker compose stop
+
+# Redémarrer les conteneurs arrêtés
+docker compose start
+
+# Arrêter et supprimer les conteneurs et les réseaux (CONSERVE les volumes nommés)
+docker compose down
+
+# Arrêter et supprimer les conteneurs, les réseaux ET les volumes (efface la BDD !)
+docker compose down -v
+```
+
+> **Attention :** La différence entre `docker compose down` et `docker compose down -v` est importante. Sans `-v`, vos données PostgreSQL survivent dans le volume nommé et seront intactes au prochain `docker compose up -d`. Avec `-v`, le volume est détruit et vous repartez d'une base vide.
+
+## 6\. Parallèle avec le Cloud
+
+Chaque concept mis en place en local dans `compose.yaml` correspond à une brique d'architecture dans le Cloud :
+
+* **Réseaux `frontend` et `backend`** : dans le Cloud, cette segmentation s'appuie sur un **VPC** (*Virtual Private Cloud*) découpé en **sous-réseaux publics** (où l'on place le reverse proxy ou le load balancer) et en **sous-réseaux privés** (où l'on place l'API et la base de données, sans adresse IP publique). Les règles de communication entre couches sont filtrées par des **Security Groups** (AWS/Scaleway) ou des **NSG** (Azure).  
+* **Volumes nommés** : sur un fournisseur Cloud, la persistance repose sur des disques réseau détachables (**AWS EBS**, **Azure Managed Disks**, **Google Persistent Disk**, **Scaleway Block Storage**) ou des systèmes de fichiers partagés (**AWS EFS**, **Azure Files**).  
+* **Conteneur PostgreSQL** : faire tourner une base de données dans un conteneur est très pratique en développement local et pour les tests. En production dans le Cloud, on remplace généralement le conteneur `db` par un **service de base de données managé** (**AWS RDS**, **Azure Database for PostgreSQL**, **Google Cloud SQL**, **Scaleway Managed Database**). L'API continue d'utiliser la même variable `DATABASE_URL`, mais le fournisseur Cloud prend en charge les sauvegardes automatiques, les mises à jour de sécurité et la réplication.  
+* **Docker Compose** : Compose pilote des conteneurs sur **une seule machine**. Dès qu'une application doit tourner sur plusieurs serveurs en parallèle pour encaisser de la charge ou tolérer la panne d'une machine, on bascule sur un orchestrateur comme **Kubernetes** (EKS, AKS, GKE, Kapsule) ou **AWS ECS**.

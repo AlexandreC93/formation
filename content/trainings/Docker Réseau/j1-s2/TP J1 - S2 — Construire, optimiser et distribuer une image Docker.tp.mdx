@@ -1,0 +1,447 @@
+# Construire, optimiser et distribuer une image Docker
+
+## Objectifs
+
+* Comprendre concrètement comment une application est empaquetée dans une image Docker à partir d'un `Dockerfile`.
+
+* Constater les risques d'une image mal construite (poids excessif, présence involontaire de fichiers sensibles).
+
+* Observer l'effet du cache de couches, du fichier `.dockerignore` et du build multi-stage sur la vitesse de construction et la taille finale.
+
+* Manipuler le cycle complet de publication et de récupération sur un registre privé local.
+
+* Définir des règles claires de versionnement, de distribution et de choix d'outillage autour des images.
+
+> **Mode d'emploi :** tous les fichiers et toutes les commandes sont fournis et expliqués ci-dessous. Votre travail consiste à les exécuter dans l'ordre, relever les mesures affichées par Docker et répondre aux questions d'analyse.
+
+## Étape 1 : Mettre en place l'application fil rouge
+
+Vous allez créer une petite API web en Python (Flask) qui servira de fil rouge pour la suite.
+
+1. Créez un dossier nommé `fil-rouge-api` sur votre poste, puis ouvrez un terminal dans ce dossier (ou utilisez `mkdir fil-rouge-api` puis `cd fil-rouge-api`).
+
+2. À l'intérieur de `fil-rouge-api`, créez les quatre fichiers suivants avec votre éditeur de texte :
+
+**Fichier `requirements.txt`** (liste des bibliothèques Python nécessaires) :
+
+```
+flask==3.1.0
+
+```
+
+**Fichier `app.py`** (code de l'API) :
+
+```
+import os
+import socket
+from flask import Flask, jsonify
+
+app = Flask(__name__)
+
+
+@app.route("/")
+def index():
+    return jsonify(
+        {
+            "service": "fil-rouge-api",
+            "version": os.getenv("APP_VERSION", "1.0"),
+            "host": socket.gethostname(),
+            "message": "Bienvenue sur l'API fil rouge",
+        }
+    )
+
+
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok"}), 200
+
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port)
+
+```
+
+**Fichier `.env`** (simule un fichier de mots de passe locaux qui ne doit jamais sortir du poste) :
+
+```
+SECRET_KEY=mot-de-passe-local-a-ne-pas-publier
+
+```
+
+**Fichier `README.md`** (documentation interne du dépôt) :
+
+```
+# API Fil Rouge
+
+```
+
+## Étape 2 : Construire une première image naïve et relever ses défauts
+
+Pour comprendre l'importance des bonnes pratiques de construction, vous allez commencer par un `Dockerfile` volontairement naïf.
+
+### 2.1 Créer le `Dockerfile` initial
+
+Créez un fichier nommé exactement `Dockerfile` (sans extension) dans le dossier `fil-rouge-api` avec le contenu suivant :
+
+```
+FROM python:3.12
+
+WORKDIR /app
+
+COPY . .
+
+RUN pip install -r requirements.txt
+
+EXPOSE 5000
+
+CMD ["python", "app.py"]
+
+```
+
+### 2.2 Construire l'image et la tester
+
+Lancez la construction depuis le dossier `fil-rouge-api` :
+
+```
+docker build -t fil-rouge-api:1.0-lourd .
+
+```
+
+Décryptage :
+
+* `docker build` : lit le `Dockerfile` et assemble les couches une par une ;
+
+* `-t fil-rouge-api:1.0-lourd` : attribue un nom (`fil-rouge-api`) et une étiquette de version (`1.0-lourd`) à l'image ;
+
+* `.` : indique que les fichiers sources se trouvent dans le dossier courant.
+
+Démarrez ensuite un conteneur basé sur cette image :
+
+```
+docker run -d --name api-test -p 8000:5000 fil-rouge-api:1.0-lourd
+
+```
+
+Ouvrez votre navigateur aux deux adresses suivantes pour vérifier que l'API répond :
+
+* `http://localhost:8000`
+
+* `http://localhost:8000/health`
+
+### 2.3 Inspecter le poids, les couches et le contenu embarqué
+
+Exécutez les trois commandes suivantes :
+
+```
+# Voir la taille totale de l'image construite
+docker images fil-rouge-api
+
+```
+
+&nbsp;
+
+```
+# Voir le détail de chaque couche et son poids
+docker history fil-rouge-api:1.0-lourd
+
+```
+
+&nbsp;
+
+```
+# Lister les fichiers réellement copiés dans /app à l'intérieur du conteneur
+docker exec api-test ls -la
+
+```
+
+Nettoyez ensuite le conteneur de test :
+
+```
+docker rm -f api-test
+
+```
+
+**Questions d'analyse :**
+
+1. Quelle est la taille totale de `fil-rouge-api:1.0-lourd` alors que votre code `app.py` pèse moins de 1 Ko ? D'où vient l'essentiel de ce poids selon `docker history` ?
+
+2. Regardez le résultat de `docker exec api-test ls -la` : le fichier `.env` contenant `SECRET_KEY` est-il présent dans l'image ? Quel serait le risque si cette image était publiée sur un registre partagé ou public ?
+
+## Étape 3 : Filtrer les fichiers sensibles et exploiter le cache
+
+Vous allez corriger trois points en même temps : exclure les fichiers locaux avec `.dockerignore`, passer sur une base plus légère (`python:3.12-slim`) et réordonner les instructions pour profiter du cache des couches.
+
+### 3.1 Créer le fichier `.dockerignore`
+
+Créez un fichier nommé `.dockerignore` dans `fil-rouge-api` :
+
+```
+.git
+.gitignore
+.env
+README.md
+Dockerfile*
+__pycache__
+*.pyc
+
+```
+
+### 3.2 Remplacer le contenu du `Dockerfile`
+
+Modifiez le fichier `Dockerfile` avec cette version optimisée :
+
+```
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# 1. Copier uniquement la liste des dépendances en premier
+COPY requirements.txt .
+
+# 2. Installer les dépendances sans conserver le cache de téléchargement pip
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 3. Copier le code applicatif en dernier
+COPY app.py .
+
+EXPOSE 5000
+
+CMD ["python", "app.py"]
+
+```
+
+### 3.3 Construire, modifier le code et observer le cache
+
+Lancez une première construction de cette nouvelle version :
+
+```
+docker build -t fil-rouge-api:1.0-slim .
+
+```
+
+Ouvrez maintenant `app.py` et modifiez légèrement le texte du message, par exemple : `"message": "Bienvenue sur l'API fil rouge (version mise a jour)"`
+
+Enregistrez `app.py`, puis relancez **exactement la même commande** de construction :
+
+```
+docker build -t fil-rouge-api:1.0-slim .
+
+```
+
+Observez attentivement les lignes affichées dans le terminal pendant ce second build (repérez la mention `CACHED`).
+
+Vérifiez enfin que `.env` n'est plus copié dans l'image en lançant un conteneur éphémère qui liste le dossier puis s'efface tout seul (`--rm`) :
+
+```
+docker run --rm fil-rouge-api:1.0-slim ls -la
+
+```
+
+**Questions d'analyse :**
+
+1. Lors du second build après modification de `app.py`, l'étape `RUN pip install` a-t-elle été réexécutée ou réutilisée depuis le cache (`CACHED`) ? Pourquoi l'ordre `COPY requirements.txt` puis `COPY app.py` change-t-il ce comportement ?
+
+2. Dans une équipe qui lance des dizaines de builds par jour, quel est l'impact concret de ce cache sur les délais de livraison et la consommation des serveurs d'intégration continue ?
+
+3. Le fichier `.env` apparaît-il encore dans le résultat de `ls -la` ?
+
+## Étape 4 : Tester le build multi-stage et comparer les résultats
+
+Sur certains projets, l'image complète (`python:3.12`) est nécessaire pour compiler des bibliothèques au moment du build, mais inutile une fois l'application en ligne. Le **build multi-stage** sépare l'étape de fabrication de l'image finale exécutée.
+
+### 4.1 Créer le fichier `Dockerfile.multistage`
+
+Dans `fil-rouge-api`, créez un fichier nommé `Dockerfile.multistage` avec le contenu suivant :
+
+```
+# Étape 1 : environnement complet servant uniquement à préparer les dépendances
+FROM python:3.12 AS builder
+
+WORKDIR /app
+COPY requirements.txt .
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
+
+# Étape 2 : image finale légère qui ne récupère que le résultat utile
+FROM python:3.12-slim
+
+WORKDIR /app
+COPY --from=builder /opt/venv /opt/venv
+COPY app.py .
+
+ENV PATH="/opt/venv/bin:$PATH"
+
+EXPOSE 5000
+CMD ["python", "app.py"]
+
+```
+
+### 4.2 Construire et comparer les trois images
+
+Construisez l'image en précisant ce fichier grâce à l'option `-f` :
+
+```
+docker build -f Dockerfile.multistage -t fil-rouge-api:1.0 .
+
+```
+
+Affichez les trois versions côte à côte :
+
+```
+docker images fil-rouge-api
+
+```
+
+Testez cette image finale en injectant une variable d'environnement `APP_VERSION` :
+
+```
+docker run -d --name api-final -p 8000:5000 -e APP_VERSION=1.0-multistage fil-rouge-api:1.0
+
+```
+
+Ouvrez `http://localhost:8000` dans votre navigateur pour vérifier que `"version": "1.0-multistage"` s'affiche bien, puis supprimez le conteneur de test :
+
+```
+docker rm -f api-final
+
+```
+
+### 4.3 Tableau comparatif
+
+Complétez le tableau à partir de la sortie de `docker images fil-rouge-api` :
+
+| Image | Base utilisée | Taille relevée | Contient `.env` ? |
+| :---- | :---- | :---- | :---- |
+| `fil-rouge-api:1.0-lourd` | `python:3.12` |  |  |
+| `fil-rouge-api:1.0-slim` | `python:3.12-slim` |  |  |
+| `fil-rouge-api:1.0` | Multi-stage (`3.12` → `3.12-slim`) |  |  |
+
+**Questions d'analyse :**
+
+1. Quel est le gain approximatif d'espace disque (en Mo ou en pourcentage) entre `1.0-lourd` et `1.0` ?
+
+2. Au-delà du gain de temps de téléchargement lors des déploiements, pourquoi retirer les compilateurs et outils inutiles de l'image finale améliore-t-il aussi la sécurité ?
+
+## Étape 5 : Publier et récupérer une image sur un registre privé local
+
+Pour qu'un serveur de recette ou de production puisse exécuter votre image, celle-ci doit être stockée dans un **registre** (*registry*). Vous allez lancer un registre privé directement sur votre poste pour reproduire le flux complet.
+
+### 5.1 Démarrer le registre local
+
+```
+docker run -d --name mon-registre -p 5000:5000 registry:2
+
+```
+
+*(Note pour macOS : si le port `5000` est déjà occupé par AirPlay, utilisez `-p 5001:5000` et remplacez `localhost:5000` par `localhost:5001` dans les commandes qui suivent.)*
+
+### 5.2 Étiqueter et envoyer l'image (`tag` et `push`)
+
+Pour indiquer à Docker vers quel registre envoyer l'image, il faut lui ajouter une étiquette préfixée par l'adresse du registre :
+
+```
+# Ajouter le tag pointant vers le registre local
+docker tag fil-rouge-api:1.0 localhost:5000/fil-rouge-api:1.0
+
+```
+
+&nbsp;
+
+```
+# Envoyer l'image vers le registre local
+docker push localhost:5000/fil-rouge-api:1.0
+
+```
+
+Ouvrez ces deux URL dans votre navigateur pour vérifier que le registre héberge bien l'image et sa version :
+
+* `http://localhost:5000/v2/_catalog`
+
+* `http://localhost:5000/v2/fil-rouge-api/tags/list`
+
+### 5.3 Simuler le téléchargement depuis un autre serveur (`pull`)
+
+Pour prouver que l'image vient bien du registre et non de votre cache local, supprimez les deux tags sur votre machine :
+
+```
+docker rmi fil-rouge-api:1.0 localhost:5000/fil-rouge-api:1.0
+
+```
+
+Vérifiez qu'elles ne sont plus listées localement :
+
+```
+docker images fil-rouge-api
+
+```
+
+Téléchargez maintenant l'image depuis votre registre, puis démarrez-la :
+
+```
+docker pull localhost:5000/fil-rouge-api:1.0
+
+```
+
+&nbsp;
+
+```
+docker run -d --name api-registre -p 8000:5000 localhost:5000/fil-rouge-api:1.0
+
+```
+
+Vérifiez dans votre navigateur que `http://localhost:8000` répond normalement.
+
+**Questions d'analyse :**
+
+1. Dans une entreprise, pourquoi héberge-t-on les images applicatives dans un registre privé plutôt que sur le Docker Hub public ?
+
+2. Si l'équipe avait envoyé toutes ses livraisons sous l'étiquette `:latest` au lieu de `:1.0`, `:1.1`, `:1.2`, quel problème concret apparaîtrait le jour où une mise en production échoue et qu'il faut revenir à la version précédente en urgence ?
+
+## Étape 6 : Nettoyage
+
+Supprimez les conteneurs de test et l'image lourde devenue inutile :
+
+```
+docker rm -f api-registre mon-registre
+
+```
+
+&nbsp;
+
+```
+docker rmi fil-rouge-api:1.0-lourd
+
+```
+
+> **Important :** conservez bien votre dossier `fil-rouge-api` (`app.py`, `requirements.txt`, `Dockerfile` et `.dockerignore`), il servira de point de départ pour le segment suivant.
+
+## Étape 7 : Étude de cas — Gouvernance des images et choix d'outillage
+
+Appuyez-vous sur vos observations et sur le support de cours pour traiter les trois situations suivantes.
+
+### Cas 1 : Revue avant mise en production
+
+Avant le lancement d'une nouvelle API, l'équipe technique vous présente son livrable : une image Docker de 1,4 Go nommée `client-api:latest`, construite depuis un poste développeur à partir d'une image de base complète et sans fichier `.dockerignore`.
+
+* **Quels sont les trois points de vigilance précis que vous demandez de corriger avant d'autoriser le déploiement ?**
+
+### Cas 2 : Passage au registre Cloud
+
+Votre projet passe en hébergement Cloud et remplace le registre local `localhost:5000` par **AWS ECR**, **Azure Container Registry**, **Google Artifact Registry** ou **Scaleway Container Registry**.
+
+1. Par rapport au test local de l'étape 5, quelles garanties supplémentaires apportent ces registres Cloud managés (authentification, sécurité des images, disponibilité) ?
+
+2. Pourquoi préfère-t-on confier le `docker build` et le `docker push` à un service automatisé (pipeline CI ou service de build Cloud) plutôt qu'au poste portable d'un développeur ?
+
+### Cas 3 : Questions d'architecture et alternatives à Docker
+
+Lors d'un comité technique, deux questions sont soulevées :
+
+* L'équipe sécurité s'inquiète d'exécuter un daemon central (`dockerd`) avec des droits administrateur (`root`) sur les serveurs Linux internes.
+
+* Un prestataire indique que le futur cluster Kubernetes n'utilisera pas Docker Engine pour exécuter les conteneurs et demande s'il faudra réécrire tous les `Dockerfile`.
+
+1. Quelle alternative sans daemon et exécutable sans droits `root` (*rootless*) pouvez-vous citer face à la remarque de l'équipe sécurité ?
+
+2. Faut-il réécrire les `Dockerfile` ou reconstruire les images dans un autre format pour tourner sur un cluster Kubernetes utilisant **containerd** ? Appuyez-vous sur le standard **OCI** vu dans le cours pour répondre.

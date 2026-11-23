@@ -1,0 +1,284 @@
+# Images, layers, Dockerfile et registries
+
+## 1\. Comment fonctionne une image Docker
+
+Une image Docker n'est pas un gros fichier monolithique. Elle est construite comme un **empilement de couches en lecture seule**, appelées **layers**.
+
+Chaque instruction qui modifie le système de fichiers lors de la construction d'une image crée une nouvelle couche qui ne contient que la différence (le delta) par rapport à la couche précédente :
+
+```
++---------------------------------------------------+
+| Couche conteneur (lecture / écriture)             |  <-- Ajoutée au docker run
++---------------------------------------------------+
+| Layer 4 : COPY app.py /app/                       |  <-- Lecture seule
++---------------------------------------------------+
+| Layer 3 : RUN pip install -r requirements.txt     |  <-- Lecture seule
++---------------------------------------------------+
+| Layer 2 : WORKDIR /app                            |  <-- Lecture seule
++---------------------------------------------------+
+| Layer 1 : Image de base (python:3.12-slim)        |  <-- Lecture seule
++---------------------------------------------------+
+```
+
+Ce mécanisme repose sur un système de fichiers par union (généralement **OverlayFS** sous Linux), qui présente toutes ces couches empilées comme une arborescence unique et cohérente à l'intérieur du conteneur.
+
+### Pourquoi ce découpage est utile
+
+* **Partage sur le disque** : si cinq images différentes partent toutes de `python:3.12-slim`, les couches de cette image de base ne sont stockées qu'une seule fois sur la machine.  
+* **Transferts réseau rapides** : lors d'un téléchargement (`docker pull`) ou d'un envoi (`docker push`), Docker ne transfère que les couches manquantes. Si vous modifiez uniquement votre code applicatif, seule la dernière couche (quelques kilo-octets) est transférée.  
+* **Cache de construction** : lors d'un build, si une instruction et les fichiers qu'elle utilise n'ont pas changé depuis la construction précédente, Docker réutilise directement la couche mise en cache sans réexécuter l'étape.
+
+> **Point important sur le cache :** dès qu'une couche est modifiée, le cache est invalidé pour cette couche **et pour toutes les couches situées au-dessus**. L'ordre des instructions dans un `Dockerfile` a donc un impact direct sur le temps de construction.
+
+## 2\. Anatomie d'un Dockerfile
+
+Un `Dockerfile` est un fichier texte qui décrit étape par étape comment assembler une image.
+
+### Les instructions principales
+
+| Instruction | Rôle | Exemple |
+| :---- | :---- | :---- |
+| `FROM` | Définit l'image de base sur laquelle s'appuyer. Toujours la première instruction (hors `ARG`). | `FROM python:3.12-slim` |
+| `WORKDIR` | Définit le répertoire de travail courant dans l'image (le crée s'il n'existe pas). | `WORKDIR /app` |
+| `COPY` | Copie des fichiers ou dossiers depuis votre machine vers l'image. | `COPY requirements.txt .` |
+| `RUN` | Exécute une commande lors de la **construction** de l'image (installation de paquets, compilation). | `RUN pip install -r requirements.txt` |
+| `ENV` | Définit une variable d'environnement persistante dans l'image et dans les conteneurs lancés. | `ENV PORT=5000` |
+| `ARG` | Définit une variable utilisable uniquement pendant le `docker build` (disparaît ensuite). | `ARG APP_VERSION=1.0` |
+| `EXPOSE` | Documente le port sur lequel l'application écoute. Ne publie pas le port sur l'hôte (il faut toujours `-p`). | `EXPOSE 5000` |
+| `USER` | Définit l'utilisateur Linux qui exécutera les instructions suivantes et le processus final. | `USER appuser` |
+| `CMD` | Définit la commande par défaut exécutée au **démarrage** du conteneur. Peut être remplacée via `docker run`. | `CMD ["python", "app.py"]` |
+| `ENTRYPOINT` | Définit l'exécutable principal du conteneur. Les arguments passés à `docker run` viennent s'y ajouter. | `ENTRYPOINT ["python"]` |
+
+### `COPY` vs `ADD`
+
+Les deux instructions copient des fichiers dans l'image, mais `ADD` possède des comportements implicites (extraction automatique d'archives `.tar.gz`, téléchargement d'URL distantes). Dans presque tous les cas, utilisez **`COPY`**, dont le comportement est strict et prévisible.
+
+### `CMD` : forme exec vs forme shell
+
+Il est recommandé d'écrire `CMD` sous forme de tableau JSON (forme *exec*) :
+
+```dockerfile
+# Forme exec (recommandée) : python est directement le PID 1
+CMD ["python", "app.py"]
+
+# Forme shell (à éviter) : lance /bin/sh -c "python app.py"
+CMD python app.py
+```
+
+&nbsp;
+
+Avec la forme *exec*, votre application reçoit directement les signaux système comme `SIGTERM` lors d'un `docker stop`, ce qui lui permet de s'arrêter proprement au lieu d'être tuée brutalement au bout de 10 secondes.
+
+### Exemple complet pour une API Python (Flask)
+
+Voici un `Dockerfile` propre qui tire parti du cache des couches :
+
+```dockerfile
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# 1. Copier uniquement la liste des dépendances en premier
+COPY requirements.txt .
+
+# 2. Installer les dépendances (cette couche reste en cache tant que requirements.txt ne change pas)
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 3. Copier le code applicatif en dernier (c'est ce qui change le plus souvent)
+COPY app.py .
+
+EXPOSE 5000
+
+CMD ["python", "app.py"]
+```
+
+&nbsp;
+
+Si vous aviez écrit `COPY . .` avant le `RUN pip install`, la moindre modification dans `app.py` aurait forcé Docker à retélécharger et réinstaller toutes les bibliothèques Python à chaque build.
+
+### Le fichier `.dockerignore`
+
+Au début d'un `docker build`, la CLI envoie tout le contenu du répertoire courant (appelé le **contexte de build**) au daemon Docker. Le fichier `.dockerignore` fonctionne exactement comme un `.gitignore` : il empêche d'envoyer des fichiers inutiles ou sensibles dans l'image.
+
+Exemple de `.dockerignore` :
+
+```
+.git
+.gitignore
+__pycache__
+*.pyc
+.venv
+.env
+Dockerfile
+README.md
+```
+
+Exclure `.git`, les environnements virtuels locaux (`.venv`, `node_modules`) et les fichiers de secrets (`.env`) accélère le build, allège l'image et évite d'embarquer des mots de passe par erreur.
+
+## 3\. Construire et analyser une image
+
+### Construire une image (`docker build`)
+
+```sh
+# Construire l'image à partir du Dockerfile dans le dossier courant (.)
+# L'option -t (tag) lui donne un nom et une version
+docker build -t mon-api:1.0 .
+
+# Spécifier un Dockerfile portant un autre nom
+docker build -f Dockerfile.prod -t mon-api:1.0 .
+
+# Forcer la reconstruction complète sans utiliser le cache
+docker build --no-cache -t mon-api:1.0 .
+```
+
+### Analyser les couches (`docker history`)
+
+Pour comprendre ce qui prend de la place dans une image et vérifier comment elle a été assemblée :
+
+```sh
+# Lister toutes les couches d'une image avec leur taille et l'instruction associée
+docker history mon-api:1.0
+
+# Afficher les commandes complètes sans les tronquer
+docker history --no-trunc mon-api:1.0
+```
+
+## 4\. Optimiser la taille des images
+
+Une image trop lourde ralentit les déploiements, consomme plus de bande passante et d'espace disque, et embarque souvent des outils système inutiles qui augmentent la surface d'attaque.
+
+### Choisir la bonne image de base
+
+La plupart des images officielles proposent plusieurs variantes :
+
+| Variante | Exemple | Poids typique | Caractéristiques |
+| :---- | :---- | :---- | :---- |
+| Standard (Debian complet) | `python:3.12` | \~1 Go | Contient compilateurs (gcc), outils réseau, utilitaires système. Rarement nécessaire en exécution. |
+| Slim (Debian allégé) | `python:3.12-slim` | \~130 Mo | Contient le strict minimum pour exécuter Python. Bon équilibre entre compatibilité et taille. |
+| Alpine Linux | `python:3.12-alpine` | \~50 Mo | Très légère, basée sur `musl libc` au lieu de `glibc`. Attention : certains paquets Python avec extensions C mettent plus de temps à compiler sur Alpine. |
+| Distroless | `gcr.io/distroless/python3` | \~50 Mo | Ne contient ni shell (`sh`/`bash`), ni gestionnaire de paquets. Utile pour réduire au maximum la surface d'attaque. |
+
+### Nettoyer dans la même instruction `RUN`
+
+Comme chaque `RUN` crée une couche figée, supprimer un fichier dans un `RUN` ultérieur **ne libère pas d'espace** dans l'image : le fichier reste présent dans la couche précédente, simplement masqué dans la couche suivante.
+
+```dockerfile
+# Mauvaise approche : le cache apt reste stocké dans la première couche
+RUN apt-get update && apt-get install -y curl
+RUN rm -rf /var/lib/apt/lists/*
+
+# Bonne approche : installation et nettoyage dans la même couche
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+```
+
+&nbsp;
+
+### Le build multi-stage
+
+Lorsqu'une application nécessite des outils de compilation (compilateur C, Go, Rust, bundler frontend, ou `gcc` pour compiler des dépendances Python), ces outils ne servent plus une fois l'application construite.
+
+Le **build multi-stage** permet d'utiliser plusieurs instructions `FROM` dans un même `Dockerfile` : une première étape compile ou prépare les fichiers, et une seconde étape repart d'une image légère en ne copiant que le résultat final.
+
+```dockerfile
+# Étape 1 : construction (builder)
+FROM python:3.12 AS builder
+
+WORKDIR /app
+COPY requirements.txt .
+# On crée un environnement virtuel isolé avec toutes les dépendances compilées
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
+
+# Étape 2 : image finale légère (runtime)
+FROM python:3.12-slim
+
+WORKDIR /app
+# On récupère uniquement l'environnement virtuel prêt à l'emploi depuis l'étape builder
+COPY --from=builder /opt/venv /opt/venv
+COPY app.py .
+
+# On ajoute l'environnement virtuel au PATH
+ENV PATH="/opt/venv/bin:$PATH"
+
+EXPOSE 5000
+CMD ["python", "app.py"]
+```
+
+&nbsp;
+
+L'image finale ne contient ni `gcc`, ni les fichiers temporaires de compilation, ni les outils de l'image `python:3.12` complète.
+
+## 5\. Registries et gestion des tags
+
+Un **registry** (registre) est un serveur qui héberge les images Docker afin de les partager entre développeurs et serveurs de déploiement.
+
+### Convention de nommage
+
+Le nom complet d'une image suit la structure suivante :
+
+```
+[ADRESSE_DU_REGISTRE/][ESPACE_DE_NOMS/]NOM_IMAGE[:TAG]
+```
+
+Exemples :
+
+* `nginx:1.27-alpine` : sans adresse de registre, Docker interroge par défaut **Docker Hub** (`docker.io/library/nginx:1.27-alpine`).  
+* `moncompte/mon-api:1.0` : image hébergée sur un compte personnel ou d'organisation sur Docker Hub.  
+* `localhost:5000/mon-api:1.0` : image hébergée sur un registre privé tournant en local sur le port `5000`.  
+* `ghcr.io/mon-org/mon-api:2.1.0` : image hébergée sur GitHub Container Registry.
+
+### Pourquoi éviter le tag `:latest`
+
+Si vous ne précisez pas de tag, Docker applique `:latest` par défaut. Ce tag n'a rien de spécial : c'est une étiquette mobile qui change de contenu dès qu'une nouvelle version est publiée.
+
+En déploiement, utiliser `:latest` empêche de savoir quelle version tourne réellement, casse la reproductibilité entre deux serveurs démarrés à quelques jours d'intervalle et complique le retour arrière. Utilisez toujours des **versions explicites** (`1.2.0`, `2026-04-15`, ou le hash court du commit Git comme `a3f9c12`).
+
+### Commandes pour travailler avec un registre
+
+```sh
+# Se connecter à un registre (Docker Hub par défaut, ou une adresse précise)
+docker login
+docker login ghcr.io
+
+# Renommer / ajouter une étiquette à une image existante avant de l'envoyer
+docker tag mon-api:1.0 localhost:5000/mon-api:1.0
+
+# Envoyer l'image vers le registre
+docker push localhost:5000/mon-api:1.0
+
+# Télécharger l'image depuis le registre
+docker pull localhost:5000/mon-api:1.0
+```
+
+### Lancer un registre privé local
+
+Pour tester le cycle complet (build, tag, push, suppression locale, pull) sans compte externe, Docker fournit une image officielle `registry:2` :
+
+```sh
+# Démarrer un registre privé accessible sur localhost:5000
+docker run -d --name mon-registre -p 5000:5000 registry:2
+
+# Vérifier les images stockées dans ce registre via son API HTTP
+curl http://localhost:5000/v2/_catalog
+```
+
+## 6\. Les alternatives à Docker et les standards OCI
+
+Docker a popularisé les conteneurs, mais l'écosystème s'est standardisé autour de l'**OCI (Open Container Initiative)**. Grâce à ce standard, une image construite avec un outil fonctionne sans modification avec un autre.
+
+Les principales alternatives que vous croiserez en entreprise sont :
+
+* **Podman** : développé par Red Hat, il propose une ligne de commande quasi identique à celle de Docker (`podman run`, `podman build`). Ses deux grandes différences sont qu'il fonctionne **sans daemon central** (pas de processus `dockerd` tournant en permanence) et en mode **rootless** par défaut (les conteneurs tournent avec les droits d'un simple utilisateur, ce qui limite les risques en cas d'évasion).  
+* **containerd** : le moteur de conteneurs bas niveau extrait de Docker, désormais projet indépendant de la CNCF. C'est aujourd'hui le runtime par défaut utilisé sous le capot par la grande majorité des clusters **Kubernetes** (qui n'ont plus besoin de `dockerd` pour exécuter les conteneurs).  
+* **CRI-O** : une autre alternative légère à `containerd`, conçue spécifiquement pour Kubernetes (très répandue sur Red Hat OpenShift).  
+* **Buildah et Kaniko** : des outils spécialisés uniquement dans la construction d'images à partir d'un `Dockerfile`, particulièrement utiles dans les pipelines d'intégration continue où l'on ne souhaite pas exposer un daemon Docker privilégié.
+
+## 7\. Parallèle avec le Cloud
+
+En environnement Cloud, les briques manipulées dans ce segment prennent la forme de services managés :
+
+* **Registres privés managés** : le registre local `registry:2` est remplacé par **AWS Elastic Container Registry (ECR)**, **Azure Container Registry (ACR)**, **Google Artifact Registry**, **Scaleway Container Registry** ou **GitHub Container Registry (GHCR)**. Ils ajoutent la gestion fine des droits d'accès (IAM), la haute disponibilité, la réplication multi-régions et l'analyse automatique de vulnérabilités.  
+* **Construction d'images dans le Cloud** : plutôt que de construire et pousser une image depuis un poste développeur, on confie le `docker build` à un service distant comme **AWS CodeBuild**, **Google Cloud Build**, **Azure Container Registry Tasks** ou un runner CI/CD (GitLab CI, GitHub Actions).  
+* **Consommation directe** : une fois l'image poussée sur le registre Cloud avec un tag précis (par exemple `1.0.3`), il suffit de donner son adresse aux services d'exécution (ECS, Cloud Run, Kubernetes) pour qu'ils la téléchargent et la déploient.

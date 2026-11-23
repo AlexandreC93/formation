@@ -1,0 +1,352 @@
+# Automatiser le build, les tests et la publication en CI/CD
+
+## Objectifs
+
+* Comprendre concrètement comment une chaîne d'intégration et de livraison continue (CI/CD) construit, teste et publie une image Docker.  
+* Constater le rôle de garde-fou des tests automatisés lorsqu'une erreur est introduite dans le code.  
+* Savoir lire et vérifier les étapes clés d'un fichier de pipeline réel (GitHub Actions).  
+* Arbitrer l'adoption ou non de Docker sur des contextes projet variés et anticiper le déploiement vers le Cloud.
+
+> **Mode d'emploi :** tous les fichiers, scripts et commandes sont fournis et expliqués ci-dessous. Votre travail consiste à exécuter chaque étape dans l'ordre, observer les résultats affichés dans le terminal et répondre aux questions d'analyse.
+
+---
+
+## Étape 1 : Ajouter des tests automatisés et les exécuter dans un conteneur
+
+Nous repartons du dossier `fil-rouge-stack` créé au segment précédent. Avant d'automatiser la publication d'une image, il faut disposer de tests capables de vérifier automatiquement que l'application fonctionne comme attendu.
+
+### 1.1 Créer le fichier de tests unitaires
+
+Créez un dossier `tests` à l'intérieur de `fil-rouge-stack/api/`, puis créez le fichier `fil-rouge-stack/api/tests/test_app.py` avec le contenu suivant :
+
+```py
+import unittest
+from app import app
+
+
+class ApiTestCase(unittest.TestCase):
+    def setUp(self):
+        self.client = app.test_client()
+
+    def test_index_returns_service_info(self):
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data["service"], "fil-rouge-api")
+
+    def test_create_item_without_name_returns_400(self):
+        response = self.client.post("/items", json={})
+        self.assertEqual(response.status_code, 400)
+        data = response.get_json()
+        self.assertIn("error", data)
+
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+Ce fichier contrôle deux comportements précis :
+
+* la route `/` répond un code HTTP `200` et renvoie bien `"service": "fil-rouge-api"` ;  
+* un envoi invalide sur `/items` (sans champ `name`) est bien rejeté avec un code HTTP `400` et un message d'erreur.
+
+### 1.2 Inclure le dossier `tests/` dans le `Dockerfile`
+
+Remplacez le contenu de `fil-rouge-stack/api/Dockerfile` par celui-ci (ajout de la ligne `COPY tests/ ./tests/`) :
+
+```dockerfile
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app.py .
+COPY tests/ ./tests/
+
+EXPOSE 5000
+
+CMD ["python", "app.py"]
+```
+
+&nbsp;
+
+### 1.3 Construire l'image et lancer les tests dans un conteneur jetable
+
+Ouvrez un terminal dans le dossier `fil-rouge-stack`, puis exécutez les deux commandes suivantes :
+
+```sh
+# 1. Construire une image temporaire incluant le code et les tests
+docker build -t fil-rouge-api:test ./api
+```
+
+&nbsp;
+
+```sh
+# 2. Exécuter les tests à l'intérieur d'un conteneur jetable (--rm)
+docker run --rm fil-rouge-api:test python -m unittest discover -s tests
+```
+
+Vous devez voir `Ran 2 tests` suivi de `OK`.
+
+**Questions d'analyse :**
+
+1. Pourquoi est-il plus fiable d'exécuter ces tests à l'intérieur du conteneur nouvellement construit plutôt que directement sur l'ordinateur d'un développeur ?  
+2. À quoi sert l'option `--rm` dans cette commande de test ?
+
+---
+
+## Étape 2 : Exécuter un pipeline CI/CD complet en local
+
+Dans un projet, un pipeline CI/CD enchaîne automatiquement la construction, les tests unitaires, un test de démarrage complet (*smoke test*) et la publication sur un registre. Vous allez reproduire toute cette chaîne directement sur votre poste.
+
+### 2.1 Démarrer un registre privé local
+
+Lancez un registre Docker local qui recevra uniquement les images validées :
+
+```sh
+docker run -d --name ci-registre -p 5000:5000 registry:2
+```
+
+*(Note pour macOS : si le port `5000` est déjà occupé par AirPlay, utilisez `-p 5001:5000` et remplacez `localhost:5000` par `localhost:5001` dans le script et les commandes qui suivent.)*
+
+### 2.2 Créer le script du pipeline (`ci-local.sh`)
+
+À la racine du dossier `fil-rouge-stack`, créez un fichier nommé `ci-local.sh` avec le contenu suivant :
+
+```sh
+#!/usr/bin/env bash
+# set -e : arrête immédiatement le script dès qu'une étape échoue
+set -e
+
+VERSION="${1:-1.0.0}"
+IMAGE="localhost:5000/fil-rouge-api:${VERSION}"
+
+echo "=== [1/4] Build de l'image ${IMAGE} ==="
+docker build -t "${IMAGE}" ./api
+
+echo "=== [2/4] Exécution des tests unitaires ==="
+docker run --rm "${IMAGE}" python -m unittest discover -s tests
+
+echo "=== [3/4] Smoke test sur la stack complète ==="
+docker compose up -d --build
+sleep 5
+# --fail force curl à échouer si le serveur répond une erreur HTTP (404, 500...)
+curl --fail http://localhost:8080/health
+echo ""
+docker compose down -v
+
+echo "=== [4/4] Publication sur le registre privé ==="
+docker push "${IMAGE}"
+
+echo "=== Pipeline terminé avec succès : ${IMAGE} publiée ==="
+```
+
+### 2.3 Lancer le pipeline pour la version `2.0.1`
+
+Rendez le script exécutable puis lancez-le avec le numéro de version `2.0.1` :
+
+```sh
+chmod +x ci-local.sh
+```
+
+&nbsp;
+
+```sh
+./ci-local.sh 2.0.1
+```
+
+*(Sur Windows, lancez cette commande dans Git Bash ou WSL.)*
+
+Vérifiez ensuite que la version `2.0.1` a bien été publiée dans le registre en ouvrant `http://localhost:5000/v2/fil-rouge-api/tags/list` dans votre navigateur ou via :
+
+```sh
+curl http://localhost:5000/v2/fil-rouge-api/tags/list
+```
+
+**Questions d'analyse :**
+
+1. À quoi sert l'option `--fail` dans la commande `curl --fail http://localhost:8080/health` à l'étape 3 ? Que se passerait-il sans elle si l'API répondait une erreur `500` ?  
+2. Pourquoi le script demande-t-il un numéro de version explicite (`2.0.1`) au lieu de publier systématiquement sous le tag `:latest` ?
+
+---
+
+## Étape 3 : Simuler un bug et observer le garde-fou automatique
+
+Vous allez maintenant introduire volontairement une anomalie dans le code pour vérifier comment le pipeline protège le registre et les serveurs de production.
+
+### 3.1 Introduire une erreur dans l'API
+
+Ouvrez `fil-rouge-stack/api/app.py`, repérez la route `/` et remplacez temporairement la ligne :
+
+```py
+            "service": "fil-rouge-api",
+```
+
+par :
+
+```py
+            "service": "mauvais-nom",
+```
+
+Enregistrez le fichier.
+
+### 3.2 Relancer le pipeline avec une nouvelle version `2.0.2`
+
+```sh
+./ci-local.sh 2.0.2
+```
+
+Observez la sortie du terminal, puis consultez le contenu du registre :
+
+```sh
+curl http://localhost:5000/v2/fil-rouge-api/tags/list
+```
+
+### 3.3 Corriger l'erreur et relancer le pipeline
+
+Dans `fil-rouge-stack/api/app.py`, remettez la valeur d'origine :
+
+```py
+            "service": "fil-rouge-api",
+```
+
+Enregistrez, puis relancez le pipeline :
+
+```sh
+./ci-local.sh 2.0.2
+```
+
+Vérifiez à nouveau la liste des versions publiées dans le registre :
+
+```sh
+curl http://localhost:5000/v2/fil-rouge-api/tags/list
+```
+
+**Questions d'analyse :**
+
+1. Lors du premier lancement de `2.0.2` (avec l'erreur), à quelle étape précise le pipeline s'est-il interrompu ?  
+2. La version défectueuse `2.0.2` a-t-elle été publiée sur le registre ? Quel risque de mise en production ce blocage automatique supprime-t-il ?  
+3. Combien de temps a-t-il fallu pour détecter l'anomalie par rapport à une phase de recette manuelle effectuée en fin de semaine ?
+
+---
+
+## Étape 4 : Lire et auditer un workflow GitHub Actions réel
+
+Sur un vrai dépôt Git, le script local `ci-local.sh` est remplacé par un fichier de pipeline exécuté automatiquement par la forge (GitHub Actions, GitLab CI ou Jenkins).
+
+### 4.1 Mettre en place le fichier de workflow
+
+Dans le dossier `fil-rouge-stack`, créez l'arborescence `.github/workflows/`, puis créez le fichier `.github/workflows/ci.yml` avec le contenu suivant :
+
+```yaml
+name: CI-CD API Fil Rouge
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/fil-rouge-api
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Récupérer le code source
+        uses: actions/checkout@v4
+
+      - name: Construire l'image Docker
+        run: |
+          docker build -t ${{ env.IMAGE_NAME }}:${{ github.sha }} ./api
+
+      - name: Lancer les tests unitaires dans le conteneur
+        run: |
+          docker run --rm ${{ env.IMAGE_NAME }}:${{ github.sha }} python -m unittest discover -s tests
+
+      - name: Smoke test de la stack complète
+        run: |
+          cp .env.example .env
+          docker compose up -d --build
+          sleep 5
+          curl --fail http://localhost:8080/health
+          docker compose down -v
+
+      - name: Connexion au registre (uniquement sur push sur main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publier l'image sur le registre
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+```
+
+&nbsp;
+
+### 4.2 Questions de lecture et de contrôle
+
+Lisez attentivement ce fichier YAML et répondez aux quatre questions suivantes :
+
+1. **Comportement sur une Pull Request :** lorsqu'un développeur propose une modification via une *Pull Request* vers `main`, quelles étapes s'exécutent et quelles étapes sont volontairement ignorées grâce à la condition `if:` ? Pourquoi est-ce important ?  
+2. **Traçabilité des versions :** le tag utilisé ici est `${{ github.sha }}` (l'identifiant unique du commit Git). Quel avantage cela apporte-t-il si un incident survient en production et que vous devez retrouver exactement le code correspondant à l'image déployée ?  
+3. **Gestion des accès :** pourquoi le mot de passe du registre est-il référencé via `${{ secrets.GITHUB_TOKEN }}` au lieu d'être écrit directement dans le fichier `.github/workflows/ci.yml` ?  
+4. **Rôle du `.env.example` :** remarquez la ligne `cp .env.example .env` dans l'étape de smoke test. Pourquoi le serveur CI a-t-il besoin de cette commande pour démarrer `docker compose` ?
+
+---
+
+## Étape 5 : Nettoyage
+
+Supprimez le registre local et l'image temporaire de test :
+
+```sh
+docker rm -f ci-registre
+```
+
+&nbsp;
+
+```sh
+docker rmi fil-rouge-api:test
+```
+
+&nbsp;
+
+```sh
+docker ps
+```
+
+> **Important :** conservez bien le dossier `fil-rouge-stack`, il servira de base pour les travaux de la deuxième journée.
+
+---
+
+## Étape 6 : Étude de cas — Arbitrer l'adoption de Docker et le déploiement Cloud
+
+Appuyez-vous sur votre expérience des quatre segments et sur le support de cours pour traiter les deux cas suivants.
+
+### Cas 1 : Faut-il adopter Docker sur ces trois projets ?
+
+Pour chacun des trois projets ci-dessous, indiquez votre décision (**Oui** ou **Non**) et justifiez-la en 2 ou 3 critères techniques et organisationnels :
+
+| Projet | Contexte | Décision (Oui / Non) et justification |
+| :---- | :---- | :---- |
+| **Projet A — Site vitrine institutionnel** | Site purement statique (HTML, CSS, JS) généré par Hugo, mis à jour une fois par mois par deux personnes du service communication. |  |
+| **Projet B — Plateforme interne de commandes** | API Python, service d'envoi d'e-mails asynchrone, cache Redis et base PostgreSQL. Équipe de six développeurs livrant une nouvelle version chaque semaine. |  |
+| **Projet C — Logiciel comptable legacy** | Application Windows de 2012 avec interface graphique lourde, reliée à une clé USB physique de licence, livrée par un éditeur sous forme d'installeur `.exe` une fois par an. |  |
+
+### Cas 2 : Piloter le déploiement vers le Cloud
+
+Votre équipe a mis en place le pipeline CI/CD et produit des images validées (`fil-rouge-api:2.0.2`). Répondez aux trois questions d'architecture et de gouvernance suivantes :
+
+1. **Principe *Build once, run anywhere* :** l'image `fil-rouge-api:2.0.2` vient d'être validée sur l'environnement de recette. Pour la déployer en production (qui utilise une autre base de données et d'autres identifiants), devez-vous demander à l'équipe de reconstruire une nouvelle image dédiée à la production ? Comment adapte-t-on le comportement de la même image entre les deux environnements ?  
+2. **Sécurité de la chaîne CI/CD vers le Cloud :** si le pipeline GitHub Actions doit pousser les images vers **AWS ECR** ou **Google Artifact Registry**, pourquoi recommande-t-on une authentification par **OIDC** plutôt que de créer des clés d'accès permanentes stockées dans les secrets du dépôt ?  
+3. **Livraison Continue vs Déploiement Continu :** quelle est la différence entre ces deux niveaux d'automatisation pour la mise en production finale ? Sur un cluster Kubernetes, quel principe (**GitOps** avec ArgoCD ou Flux) permet de garder une trace complète de chaque changement déployé ?

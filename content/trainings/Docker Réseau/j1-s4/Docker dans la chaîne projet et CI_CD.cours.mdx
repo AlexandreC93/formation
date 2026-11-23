@@ -1,0 +1,275 @@
+# Docker dans la chaîne projet et CI/CD
+
+## 1\. Le cycle Build, Ship, Run
+
+Savoir construire une image et lancer des conteneurs sur son poste est une première étape. Dans un vrai projet, l'intérêt principal de Docker apparaît lorsqu'il structure toute la chaîne qui va du code source jusqu'à la production. Ce flux suit un cycle en trois temps : **Build, Ship, Run**.
+
+```
+  [ Code source ]          [ Pipeline CI ]             [ Registry ]             [ Environnements ]
+  Git (app.py,     --->    Build & Tests      --->    Stockage image    --->   Test / Préprod / Prod
+   Dockerfile)             docker build               mon-api:a3f9c12          docker run / orchestrateur
+```
+
+1. **Build (Construire)** : à partir du code source et du `Dockerfile` versionnés dans Git, on assemble une image figée et on lui attribue un tag unique (numéro de version ou identifiant de commit Git).  
+2. **Ship (Transporter)** : une fois validée par les tests, l'image est poussée vers un registre (Docker Hub, GitHub Container Registry, AWS ECR, registre interne). Elle devient un artefact prêt à être distribué.  
+3. **Run (Exécuter)** : les différents environnements (recette, préproduction, production) téléchargent cette image exacte depuis le registre et la démarrent.
+
+### Le principe du « Build once, run anywhere »
+
+Dans une chaîne bien construite, **on ne reconstruit pas l'image pour chaque environnement**. On ne fait pas une image `mon-api:dev`, une image `mon-api:staging` et une image `mon-api:prod`.
+
+On construit l'image **une seule fois**. Si elle passe les tests en recette, c'est strictement la même image (bit pour bit) qui est ensuite déployée en production. Seule la configuration externe change d'un environnement à l'autre, injectée au démarrage via les **variables d'environnement** (`DATABASE_URL`, `LOG_LEVEL`, clés d'API, etc.).
+
+Cela élimine une source fréquente d'incidents : une dépendance mise à jour entre deux builds ou une différence de version de bibliothèque entre le serveur de test et celui de production.
+
+## 2\. Apports pour le développement et impacts organisationnels
+
+### Reproductibilité et environnements identiques
+
+Le problème classique du « ça marche sur ma machine » vient presque toujours d'un écart caché entre le poste du développeur et le serveur cible : version mineure de Python différente, bibliothèque système manquante, fichier de configuration résiduel.
+
+Avec Docker et Docker Compose, l'environnement d'exécution est décrit sous forme de code dans le dépôt Git. Tous les développeurs, les serveurs de tests automatisés et les serveurs de production exécutent exactement la même base logicielle.
+
+### Accélération de l'onboarding
+
+Sans conteneurisation, l'arrivée d'un nouveau développeur sur un projet implique souvent une journée entière à suivre une documentation d'installation (parfois obsolète) : installer la bonne version du langage, configurer une base PostgreSQL locale, créer les utilisateurs, lancer un serveur Redis, ajuster les ports.
+
+Avec un projet conteneurisé, la procédure se résume à :
+
+```sh
+git clone https://exemple.org/projet/fil-rouge-stack.git
+cd fil-rouge-stack
+cp .env.example .env
+docker compose up -d
+```
+
+En quelques minutes, le nouvel arrivant dispose d'une pile complète et isolée, sans polluer son système d'exploitation.
+
+### Relations Dev / Ops et culture DevOps
+
+Dans une organisation cloisonnée traditionnelle :
+
+* les **développeurs** écrivent le code, livrent une archive (`.zip`, `.jar`, dépôt Git) accompagnée d'une procédure d'installation manuelle ;  
+* les **équipes d'infrastructure (Ops)** doivent installer l'application, deviner les dépendances manquantes et maintenir les serveurs en état. En cas de panne, chaque équipe renvoie la responsabilité à l'autre.
+
+Docker déplace la frontière entre les deux métiers et crée un **contrat technique clair** :
+
+* les développeurs maîtrisent le contenu du conteneur (code, dépendances applicatives, `Dockerfile`) ;  
+* les équipes d'infrastructure maîtrisent l'hébergement des conteneurs (réseau, stockage, sécurité des hôtes, supervision, montée en charge).
+
+Le `Dockerfile` et les fichiers de déploiement vivent dans le même dépôt Git que le code applicatif. Les deux équipes collaborent sur les mêmes fichiers via des revues de code (*Pull Requests* / *Merge Requests*), ce qui concrétise la démarche DevOps.
+
+## 3\. Intégration dans une démarche CI/CD
+
+### Définitions
+
+* **CI — Intégration Continue (*Continuous Integration*)** : pratique qui consiste à fusionner fréquemment le code des développeurs sur un dépôt commun et à déclencher automatiquement à chaque envoi une série de vérifications (qualité de code, build de l'image, tests automatisés). L'objectif est de détecter les erreurs quelques minutes après leur introduction.  
+* **CD — Livraison Continue (*Continuous Delivery*)** : prolongement de la CI où chaque version validée est automatiquement empaquetée (image Docker poussée sur le registre) et prête à être mise en production sur simple validation humaine.  
+* **CD — Déploiement Continu (*Continuous Deployment*)** : va un cran plus loin en déployant automatiquement en production chaque version qui a passé l'ensemble des tests, sans intervention manuelle.
+
+### Les étapes types d'un pipeline Docker
+
+Un pipeline CI/CD classique pour une application conteneurisée s'enchaîne en cinq étapes :
+
+1. **Vérifications statiques (Lint)** : contrôle de la syntaxe du code source (par exemple `flake8` ou `ruff` pour Python) et de la qualité du `Dockerfile` (par exemple avec **Hadolint**).  
+2. **Build de l'image** : construction de l'image Docker à partir du `Dockerfile` avec un tag unique (souvent le hash court du commit Git, par exemple `a3f9c12`).  
+3. **Tests automatisés** :  
+   * **Tests unitaires** : exécutés directement à l'intérieur d'un conteneur temporaire basé sur l'image fraîchement construite.  
+   * **Tests d'intégration / Smoke tests** : démarrage du conteneur (ou de la stack Compose) et vérification réelle que l'application démarre, écoute sur son port et répond `200 OK` sur `/health` ou sur ses routes principales.  
+4. **Publication (Push)** : uniquement si les étapes précédentes ont réussi (et généralement uniquement sur la branche principale `main` ou lors de la création d'un tag Git), connexion au registre et envoi de l'image.  
+5. **Déploiement** : notification de l'environnement cible (serveur, orchestrateur ou service Cloud) pour qu'il télécharge et démarre la nouvelle version de l'image.
+
+> **Bonne pratique sur les pipelines :** si l'étape de test échoue, le pipeline s'arrête immédiatement et l'image n'est jamais poussée sur le registre. Cela garantit qu'aucune image cassée ne peut être déployée par erreur.
+
+## 4\. Panorama des outils CI/CD
+
+Les concepts restent identiques quel que soit l'outil choisi ; seule la syntaxe du fichier de description change.
+
+### GitHub Actions
+
+Intégré directement à GitHub, il s'appuie sur des fichiers YAML placés dans le dossier `.github/workflows/`.
+
+```yaml
+name: CI-CD API Fil Rouge
+
+# Déclencheurs : sur chaque push sur main et sur chaque Pull Request
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/fil-rouge-api
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Récupérer le code source
+        uses: actions/checkout@v4
+
+      - name: Construire l'image Docker
+        run: |
+          docker build -t ${{ env.IMAGE_NAME }}:${{ github.sha }} ./api
+
+      - name: Lancer les tests unitaires dans le conteneur
+        run: |
+          docker run --rm ${{ env.IMAGE_NAME }}:${{ github.sha }} python -m unittest discover -s tests
+
+      - name: Smoke test de la stack complète
+        run: |
+          cp .env.example .env
+          docker compose up -d --build
+          sleep 5
+          curl --fail http://localhost:8080/health
+          docker compose down -v
+
+      - name: Connexion au registre (uniquement sur push sur main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publier l'image sur le registre
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+```
+
+&nbsp;
+
+Éléments clés de cette syntaxe :
+
+* **`on`** : définit les événements Git qui lancent le pipeline (`push`, `pull_request`, `workflow_dispatch` pour un lancement manuel).  
+* **`runs-on`** : choisit la machine virtuelle éphémère (le *runner*) sur laquelle les commandes tournent (`ubuntu-latest` inclut déjà Docker et Docker Compose).  
+* **`uses` vs `run`** : `uses` appelle une action prête à l'emploi de la communauté ; `run` exécute des commandes shell classiques.  
+* **`secrets`** : permet d'injecter des jetons ou mots de passe stockés de façon chiffrée dans les paramètres du dépôt, sans jamais les écrire en clair dans le code.  
+* **`curl --fail`** : l'option `--fail` (ou `-f`) est indispensable dans un pipeline CI. Sans elle, `curl` renvoie un code de sortie `0` (succès) même si le serveur répond une erreur HTTP `500` ou `404`. Avec `--fail`, toute erreur HTTP fait échouer l'étape.
+
+### GitLab CI
+
+Intégré à GitLab (SaaS ou auto-hébergé), il utilise un fichier unique `.gitlab-ci.yml` à la racine du dépôt. GitLab exécute chaque job à l'intérieur d'un conteneur ; pour lancer des commandes `docker build` depuis un job, on utilise souvent un service compagnon appelé **Docker-in-Docker (`docker:dind`)**.
+
+```yaml
+stages:
+  - build
+  - test
+  - push
+
+variables:
+  IMAGE_TAG: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+
+build_image:
+  stage: build
+  image: docker:27
+  services:
+    - docker:27-dind
+  script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker build -t $IMAGE_TAG ./api
+    - docker push $IMAGE_TAG
+
+smoke_test:
+  stage: test
+  image: docker:27
+  services:
+    - docker:27-dind
+  script:
+    - docker pull $IMAGE_TAG
+    - docker run -d --name api-ci -p 5000:5000 $IMAGE_TAG
+    - sleep 3
+    - apk add --no-cache curl
+    - curl --fail http://docker:5000/health
+```
+
+&nbsp;
+
+### Jenkins
+
+Jenkins est un serveur d'automatisation open source très répandu dans les grandes entreprises et les environnements internes. Il repose sur un fichier `Jenkinsfile` (écrit en syntaxe Groovy) placé dans le dépôt du projet :
+
+```groovy
+pipeline {
+    agent any
+
+    environment {
+        IMAGE_TAG = "mon-registre.interne/fil-rouge-api:${env.BUILD_NUMBER}"
+    }
+
+    stages {
+        stage('Build') {
+            steps {
+                sh 'docker build -t ${IMAGE_TAG} ./api'
+            }
+        }
+        stage('Test') {
+            steps {
+                sh 'docker run --rm ${IMAGE_TAG} python -m unittest discover -s tests'
+            }
+        }
+        stage('Push') {
+            when { branch 'main' }
+            steps {
+                sh 'docker push ${IMAGE_TAG}'
+            }
+        }
+    }
+}
+```
+
+&nbsp;
+
+Contrairement à GitHub Actions ou GitLab SaaS, Jenkins demande généralement d'héberger, sécuriser et mettre à jour soi-même le serveur maître, ses plugins et ses agents d'exécution.
+
+### Tester sa logique de pipeline en local
+
+Un piège courant consiste à multiplier les commits du type `"fix ci 1"`, `"fix ci 2"`, `"fix ci 3"` pour déboguer un fichier YAML. Pour éviter cela, il est utile de :
+
+* valider d'abord les commandes exactes (`docker build`, tests unitaires, `docker compose up`, `curl --fail`, `docker push` vers un registre local `registry:2`) dans un script local reproductible (avec `set -e` en bash pour qu'une commande en échec stoppe immédiatement le script, comme le fait un runner CI) ;  
+* utiliser des outils spécialisés comme **act** (qui exécute des workflows GitHub Actions en local dans des conteneurs Docker) si l'on souhaite tester la syntaxe du workflow avant de pousser sur GitHub.
+
+## 5\. Critères de décision : quand adopter Docker sur un projet
+
+Docker apporte beaucoup, mais introduit aussi une couche technique supplémentaire à maintenir. Avant de décider de conteneuriser un projet, il faut évaluer le contexte technique et humain.
+
+### Situations où Docker est fortement recommandé
+
+* **Applications modernes ou découpées en plusieurs services** : API, workers asynchrones, frontend, cache, base de données.  
+* **Équipes de plusieurs développeurs** : besoin de standardiser les postes de travail et d'accélérer l'intégration des nouveaux arrivants.  
+* **Déploiements fréquents et CI/CD** : besoin de livrer vite et de façon fiable, avec des retours arrière simples (il suffit de redéployer le tag d'image précédent).  
+* **Environnements hétérogènes ou migration Cloud** : éviter de dépendre de la configuration manuelle d'un serveur spécifique et préparer le passage sur des services Cloud managés.  
+* **Isolation des tests** : lancer des bases de données jetables ou plusieurs versions d'un même langage sur la même machine d'intégration continue.
+
+### Situations où Docker est discutable ou contre-productif
+
+* **Sites statiques simples** : un site HTML/CSS/JS ou un frontend compilé (React, Vue, Hugo) se déploie beaucoup plus simplement et à moindre coût sur du stockage objet \+ CDN (S3 \+ CloudFront, Netlify, Cloudflare Pages) que dans un conteneur Nginx à maintenir.  
+* **Applications legacy fortement couplées à l'OS ou au matériel** : anciens logiciels Windows graphiques, applications liées à un dongle matériel ou à une licence attachée à une adresse MAC fixe, vieux systèmes imposant des droits noyau spécifiques.  
+* **Applications à très fortes exigences sur les entrées/sorties disque ou bases de données critiques sans expertise** : faire tourner une base de données de production critique dans des conteneurs demande une vraie maîtrise du stockage persistant, des sauvegardes et du basculement. Sans cette compétence, une VM dédiée ou une base managée Cloud est préférable.  
+* **Absence de compétences de maintenance** : une image Docker ne se maintient pas toute seule. Si personne dans l'équipe ne sait mettre à jour les images de base (correctifs de sécurité Linux/Python), gérer la rotation des logs ou surveiller l'espace disque des serveurs hôtes, Docker ajoute de la dette technique au lieu d'en retirer.
+
+### Grille d'arbitrage rapide
+
+| Critère | Favorable à Docker | À reconsidérer |
+| :---- | :---- | :---- |
+| **Architecture** | Web, API, workers, microservices | Site statique pur, logiciel lourd desktop |
+| **Système cible** | Linux standard | OS propriétaire ancien, dépendances matérielles |
+| **Fréquence de livraison** | Hebdomadaire ou quotidienne | Une fois par an sans évolution prévue |
+| **Équipe** | Plusieurs devs, bases Linux acquises | Développeur unique sans temps pour l'infra |
+| **Cible d'hébergement** | Cloud (CaaS, Kubernetes) ou serveurs Linux | Hébergement mutualisé classique |
+
+## 6\. Parallèle avec le Cloud
+
+Dans un contexte Cloud, la chaîne CI/CD s'intègre directement aux services du fournisseur :
+
+* **Runners managés** : au lieu d'entretenir des serveurs dédiés pour exécuter les builds, les plateformes comme GitHub Actions, GitLab SaaS, **AWS CodeBuild**, **Google Cloud Build** ou **Azure Pipelines** démarrent une machine virtuelle propre à la demande pour chaque exécution, puis la détruisent aussitôt.  
+* **Authentification par OIDC (sans mots de passe statiques)** : dans un pipeline Cloud moderne, on évite de stocker des clés d'accès permanentes (comme un couple `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) dans les secrets GitHub ou GitLab. On configure une relation de confiance **OIDC (*OpenID Connect*)** : le runner CI demande un jeton temporaire valable quelques minutes au fournisseur Cloud pour pousser l'image sur ECR/ACR/Artifact Registry et déclencher le déploiement.  
+* **Déclenchement du déploiement** : la dernière étape du pipeline varie selon l'hébergement choisi :  
+  * sur **Cloud Run** ou **Scaleway Serverless Containers**, une simple commande CLI met à jour le service avec le nouveau tag d'image ;  
+  * sur **AWS ECS**, le pipeline publie une nouvelle révision de *Task Definition* ;  
+  * sur **Kubernetes**, on privilégie souvent le modèle **GitOps** (avec **ArgoCD** ou **Flux**) : le pipeline CI met à jour le numéro de tag dans un dépôt Git de configuration, et l'outil GitOps détecte ce changement pour déployer la nouvelle image sur le cluster.
