@@ -1,0 +1,101 @@
+# Piloter la scalabilité, l'orchestration et la résilience dans le Cloud
+
+## Objectifs
+
+* Arbitrer entre **scaling vertical** et **scaling horizontal**, et vérifier les prérequis logiciels d'une application **stateless**.  
+* Identifier le rôle exact d'un **load balancer** et d'un **CDN** pour absorber un pic de trafic sans dégrader l'expérience utilisateur.  
+* Cadrer une politique d'**auto-scaling** réaliste et sécurisée face aux risques de dérapage budgétaire ou d'instabilité.  
+* Arbitrer de manière argumentée entre **Docker Compose**, **Kubernetes managé**, **CaaS Serverless** et **FaaS** selon le contexte métier.  
+* Traduire des exigences métier de continuité d'activité en architecture **Haute Disponibilité (Multi-AZ)** et en objectifs chiffrés de **PRA (RPO / RTO)**.
+
+---
+
+## Atelier 1 : Préparer l'application à un pic de charge (*Stateless* et *Scaling*)
+
+### Mise en situation
+
+Votre organisation lance une campagne nationale de communication qui va multiplier par 10 le trafic sur son portail web entre 12h et 14h, avant de retomber quasiment à zéro la nuit. Aujourd'hui, l'application tourne sur un unique serveur virtuel. Deux problèmes apparaissent lors de la revue technique :
+
+* L'équipe infrastructure propose de simplement doubler la taille du serveur existant la veille de la campagne.  
+* Les développeurs signalent que l'application stocke actuellement les sessions de connexion des utilisateurs en mémoire vive sur le serveur, et les justificatifs PDF téléversés dans un dossier local du conteneur.
+
+### Questions d'analyse
+
+1. **Scaling vertical vs scaling horizontal :** expliquez les trois limites majeures de la proposition consistant à grossir le serveur existant (*scale-up*), puis les trois avantages d'une montée en charge par multiplication des conteneurs (*scale-out*).  
+2. **Élasticité et maîtrise des coûts :** quelle est la différence entre la **scalabilité** et l'**élasticité** ? En quoi le mécanisme de **scale-to-zero** peut-il être pertinent pour un service qui n'a presque aucun trafic la nuit ?  
+3. **Diagnostic *stateful* vs *stateless* :** si vous lancez trois copies identiques de l'application en parallèle sans modifier le code actuel, quels deux dysfonctionnements concrets les utilisateurs vont-ils subir à cause des sessions en mémoire et des PDF locaux ?  
+4. **Externaliser l'état :** pour rendre les conteneurs strictement identiques et jetables (*stateless*), dans quel type de service partagé devez-vous déplacer chacune de ces trois catégories de données ?  
+   * les données métier structurées ;  
+   * les sessions utilisateurs et le cache temporaire ;  
+   * les fichiers téléversés (PDF, images, vidéos).
+
+---
+
+## Atelier 2 : Absorber le trafic avec un Load Balancer et un CDN
+
+### Mise en situation
+
+Votre application est désormais *stateless* et prête à tourner sur plusieurs conteneurs en parallèle. Elle sert également de nombreuses images, vidéos de présentation et fichiers statiques à des utilisateurs répartis en France, au Canada et au Japon.
+
+### Questions d'analyse
+
+1. **Les 3 missions d'un Load Balancer :** au-delà de la simple répartition des requêtes entre les conteneurs, citez les deux autres fonctions essentielles assurées par un répartiteur de charge (santé des instances et chiffrement HTTPS).  
+2. **Choisir l'algorithme de répartition :** associez chacun des trois besoins ci-dessous à l'algorithme adapté (**Round Robin**, **Least Connections** ou **IP Hash**) :  
+   * toutes les requêtes ont un coût de traitement similaire et l'on souhaite une répartition simple à tour de rôle ;  
+   * certaines requêtes sont très rapides (lecture d'une fiche) tandis que d'autres monopolisent le serveur plusieurs secondes (génération d'un rapport) ;  
+   * une ancienne application qui n'a pas encore pu être rendue *stateless* impose qu'un même utilisateur reste toujours envoyé vers la même instance.  
+3. **Intérêt d'un CDN (*Content Delivery Network*) :** expliquez comment un CDN améliore à la fois la rapidité d'affichage pour les utilisateurs basés au Canada ou au Japon et la capacité de vos serveurs à encaisser le pic de trafic.
+
+---
+
+## Atelier 3 : Auditer une politique d'auto-scaling et choisir son niveau d'orchestration
+
+### Mise en situation
+
+Deux décisions techniques sont soumises à votre validation en comité de pilotage :
+
+* **Proposition A (Auto-scaling) :** l'équipe propose de déclencher l'ajout automatique de conteneurs dès que le CPU dépasse 70 %, en fixant un minimum à **1 instance**, aucun plafond maximum (*« pour ne jamais bloquer les clients »*) et aucune période d'attente entre deux ajustements.  
+* **Proposition B (Hébergement) :** pour exploiter les trois services de l'application fil rouge (reverse proxy, API, base de données), un premier membre de l'équipe propose de rester sur **Docker Compose** en production sur un serveur unique, tandis qu'un prestataire pousse pour monter un cluster **Kubernetes** complet.
+
+### Questions d'audit
+
+1. **Corriger la politique d'auto-scaling :** identifiez les **trois défauts** de la Proposition A (sur le minimum, le maximum et l'absence de période de stabilisation / *cooldown*), puis expliquez le risque concret évité par chaque garde-fou.  
+2. **Autres métriques de déclenchement :** en dehors de l'utilisation CPU ou RAM, citez deux autres indicateurs qui peuvent déclencher un auto-scaling selon le type de traitement (requêtes web ou traitements asynchrones).  
+3. **Limites de Docker Compose en production :** pourquoi ne peut-on pas se contenter de Docker Compose sur une machine unique dès que la tolérance aux pannes devient critique ?  
+4. **Rôle et vocabulaire Kubernetes :**  
+   * citez les quatre tâches automatisées qu'un orchestrateur apporte par rapport à Docker Compose ;  
+   * expliquez en une phrase simple chacun des quatre concepts de base de Kubernetes : **Pod**, **Deployment**, **Service** et **Ingress**.
+
+---
+
+## Atelier 4 : Arbitrer entre Kubernetes managé, CaaS Serverless et FaaS
+
+Pour chacun des trois contextes ci-dessous, recommandez l'approche la plus adaptée parmi **Kubernetes managé** (EKS, AKS, GKE, OVHCloud, Kapsule), **CaaS Serverless** (Cloud Run, ECS Fargate, Scaleway Serverless Containers) ou **FaaS** (AWS Lambda, Azure Functions, Google Cloud Functions, Scaleway Functions), et justifiez votre choix.
+
+| Contexte projet | Solution recommandée, justification et points de vigilance |
+| :---- | :---- |
+| **Cas 1 — API fil rouge en équipe réduite** : application simple composée de quelques services conteneurisés, maintenue par deux développeurs sans expert infrastructure, ayant besoin de HTTPS, d'auto-scaling et de redémarrage automatique. |  |
+| **Cas 2 — Traitement ponctuel d'images** : à chaque fois qu'un utilisateur dépose une photo dans un stockage objet S3, un petit script de 3 secondes doit générer automatiquement une miniature. |  |
+| **Cas 3 — Plateforme critique multi-équipes** : système d'information regroupant une quarantaine de microservices gérés par plusieurs équipes autonomes, avec une équipe dédiée aux opérations et des besoins avancés de gouvernance réseau. |  |
+
+**Question complémentaire sur le FaaS :** quelles sont les **trois limites principales** du modèle *Functions as a Service* à garder en tête avant d'y basculer une application (démarrage à froid, durée d'exécution et dépendance fournisseur) ?
+
+---
+
+## Atelier 5 : Cadrer la Haute Disponibilité (HA) et le Plan de Reprise d'Activité (PRA)
+
+### Mise en situation
+
+Lors de la validation du cahier des charges, la direction métier formule deux exigences :
+
+* **Exigence 1 :** *« En fonctionnement normal, une panne d'un serveur ou une coupure électrique dans un datacenter ne doit pas interrompre le service pour nos utilisateurs. »*  
+* **Exigence 2 :** *« En cas de sinistre majeur (incendie complet d'un site, rançongiciel ou suppression accidentelle de la base), nous acceptons de perdre au maximum 15 minutes de données récentes et de subir une interruption de service d'au maximum 1 heure. »*
+
+### Questions d'analyse
+
+1. **Supprimer les points de défaillance uniques (SPOF) :** même lorsque l'API tourne sur 3 conteneurs en parallèle, quels autres composants d'une architecture web restent des SPOF s'ils n'existent qu'en un seul exemplaire ?  
+2. **Architecture Haute Disponibilité (Multi-AZ) :** expliquez comment le déploiement **Multi-AZ** (pour les conteneurs comme pour une base PostgreSQL managée avec basculement automatique / *failover*) répond à l'Exigence 1\.  
+3. **Traduire le PRA en RPO et RTO :**  
+   * associez les deux valeurs de l'Exigence 2 (**15 minutes** et **1 heure**) aux indicateurs **RPO** et **RTO** en rappelant la signification de chacun ;  
+   * expliquez concrètement ce que ces deux objectifs imposent sur la fréquence de sauvegarde/réplication de PostgreSQL et sur l'automatisation de la remise en service ;  
+   * pourquoi un chef de projet doit-il toujours arbitrer ces deux chiffres avec le métier plutôt que de demander systématiquement « zéro perte et zéro coupure » ?
