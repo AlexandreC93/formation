@@ -1,0 +1,242 @@
+# Scalabilité, élasticité et résilience
+
+## 1\. Scalabilité et élasticité
+
+Lorsqu'une application gagne des utilisateurs ou subit un pic d'activité (soldes, campagne marketing, ouverture d'un service), son infrastructure doit absorber cette charge sans ralentir ni tomber en panne.
+
+### Scaling vertical (*Scale-up*)
+
+Le scaling vertical consiste à **augmenter la puissance de la machine existante** en lui ajoutant du processeur (vCPU), de la mémoire vive (RAM) ou un disque plus rapide.
+
+* **Avantages** : très simple à mettre en œuvre, aucune modification du code applicatif nécessaire.  
+* **Limites** :  
+  * **Plafond matériel** : on finit toujours par atteindre la taille maximale de serveur proposée par l'hébergeur.  
+  * **Interruption de service** : changer la taille d'une machine virtuelle nécessite souvent de la redémarrer.  
+  * **Point de défaillance unique** : si cette grosse machine tombe en panne, toute l'application s'arrête.
+
+### Scaling horizontal (*Scale-out*)
+
+Le scaling horizontal consiste à **multiplier le nombre d'instances identiques** de l'application (plusieurs conteneurs ou plusieurs serveurs) qui travaillent en parallèle.
+
+* **Avantages** : capacité quasi illimitée, tolérance aux pannes (si une instance tombe, les autres prennent le relais), mises à jour possibles sans coupure de service.  
+* **Limites** : demande une architecture logicielle adaptée et un répartiteur de charge devant les instances.
+
+### L'élasticité
+
+La **scalabilité** est la capacité d'une architecture à grandir pour supporter la charge. L'**élasticité** est la capacité à **s'ajuster automatiquement à la hausse comme à la baisse** en temps réel selon la demande.
+
+Dans le Cloud, l'élasticité permet d'ajouter des conteneurs pendant le pic de 12h à 14h, puis de les supprimer la nuit pour ne pas payer de ressources inutilisées. Certains services vont jusqu'au **scale-to-zero** : en l'absence totale de trafic, le nombre de conteneurs tombe à zéro et redémarre automatiquement dès qu'une requête arrive.
+
+### La condition préalable : concevoir une application *stateless*
+
+Pour qu'une API puisse être dupliquée en 3, 10 ou 50 conteneurs interchangeables, elle doit être **stateless** (sans état local).
+
+Si un conteneur stocke des données importantes dans sa propre mémoire ou sur son disque local — par exemple un fichier téléversé par un utilisateur ou une session de connexion en mémoire — la requête suivante envoyée vers un autre conteneur ne retrouvera pas ces informations.
+
+Dans une architecture scalable, chaque conteneur ne conserve aucune donnée durable :
+
+* **Les données structurées** sont stockées dans une base de données partagée (PostgreSQL).  
+* **Les sessions utilisateurs et le cache** sont externalisés dans un service dédié en mémoire (Redis, Memcached).  
+* **Les fichiers (images, PDF, vidéos)** sont déposés dans un stockage objet partagé (type S3).
+
+Tous les conteneurs `api` deviennent alors strictement identiques et jetables.
+
+## 2\. Load balancing et CDN
+
+### Rôle d'un load balancer
+
+Dès que vous exécutez plusieurs instances de votre API, les clients ne peuvent pas connaître l'adresse IP de chaque conteneur. On place devant eux un **load balancer** (répartiteur de charge) qui joue le rôle de point d'entrée unique.
+
+```
+                        +---> [ api-1 (172.18.0.3) ] ---+
+                        |                               |
+  Clients ---> [ Load Balancer ] ---> [ api-2 (172.18.0.4) ] ---> [ PostgreSQL ]
+                        |                               |
+                        +---> [ api-3 (172.18.0.5) ] ---+
+```
+
+Ses fonctions principales sont :
+
+1. **Répartir le trafic** équitablement entre les instances actives.  
+2. **Surveiller la santé des instances (*health checks*)** : il interroge régulièrement une route comme `/health`. Si un conteneur ne répond plus ou renvoie une erreur `500`, le load balancer le retire automatiquement de la rotation jusqu'à son rétablissement.  
+3. **Gérer le chiffrement HTTPS (terminaison TLS)** : le load balancer déchiffre les requêtes HTTPS entrantes et transmet les requêtes en HTTP interne aux conteneurs, ce qui évite de gérer les certificats sur chaque instance.
+
+### Les algorithmes de répartition courants
+
+* **Round Robin (tourniquet)** : chaque nouvelle requête est envoyée à l'instance suivante dans la liste (1, puis 2, puis 3, puis 1...). C'est le mode par défaut, efficace lorsque toutes les requêtes ont un coût similaire.  
+* **Least Connections (moins de connexions)** : la requête est dirigée vers l'instance qui traite actuellement le moins de requêtes simultanées. Utile lorsque certaines requêtes sont beaucoup plus longues que d'autres.  
+* **IP Hash (affinité de session)** : l'adresse IP du client détermine toujours la même instance cible. Utile uniquement pour d'anciennes applications qui n'ont pas pu être rendues *stateless*.
+
+### Mettre en place le scaling horizontal en local avec Docker Compose et Nginx
+
+Docker Compose permet de lancer plusieurs réplicas d'un même service grâce à l'option `--scale` :
+
+```sh
+docker compose up -d --scale api=3
+```
+
+Pour que cela fonctionne, le service `api` dans `compose.yaml` **ne doit pas avoir de directive `container_name`** (car deux conteneurs ne peuvent pas porter exactement le même nom) ni de port fixe publié sur l'hôte (`ports:`), puisque seul le reverse proxy Nginx reçoit le trafic externe.
+
+Côté Nginx, lorsqu'on utilise plusieurs conteneurs `api` derrière le même nom DNS interne, il est important de lui demander de réinterroger régulièrement le serveur DNS intégré de Docker (`127.0.0.11`) afin qu'il découvre les nouveaux conteneurs ajoutés ou oublie immédiatement un conteneur arrêté :
+
+```nginx
+server {
+    listen 80;
+
+    # Adresse fixe du serveur DNS interne de Docker
+    resolver 127.0.0.11 valid=5s;
+
+    location / {
+        # L'utilisation d'une variable force Nginx à utiliser le resolver
+        set $backend_api http://api:5000;
+        proxy_pass $backend_api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+&nbsp;
+
+À chaque requête, le DNS interne de Docker retourne les adresses IP des conteneurs `api` actifs en alternant leur ordre, ce qui répartit naturellement le trafic entre toutes les instances.
+
+### Le rôle du CDN (*Content Delivery Network*)
+
+Un **CDN** est un réseau mondial de serveurs relais (appelés *points de présence* ou *edge locations*) répartis au plus près des utilisateurs finaux.
+
+Il met en cache les ressources statiques (images, feuilles de style CSS, fichiers JavaScript, vidéos) et parfois certaines réponses d'API publiques :
+
+* **Latence réduite** : un utilisateur à Montréal ou Tokyo télécharge les fichiers depuis un serveur proche de chez lui plutôt que d'attendre un aller-retour jusqu'à un datacenter à Paris.  
+* **Allègement des serveurs d'origine** : jusqu'à 80 % ou 90 % des requêtes statiques sont servies directement par le CDN sans jamais atteindre vos conteneurs ni votre load balancer.
+
+Exemples courants : Cloudflare, AWS CloudFront, Fastly, Akamai, Azure Front Door.
+
+## 3\. Auto-scaling
+
+L'auto-scaling automatise l'ajout ou le retrait d'instances sans intervention humaine, en s'appuyant sur des règles définies à l'avance.
+
+### Métriques de déclenchement
+
+Une politique d'auto-scaling surveille en continu un indicateur précis :
+
+* **Utilisation CPU ou RAM** : par exemple, ajouter un conteneur si la moyenne CPU dépasse 70 % pendant 2 minutes.  
+* **Trafic réseau / requêtes HTTP** : ajouter une instance dès que chaque conteneur traite plus de 100 requêtes par seconde.  
+* **Profondeur d'une file de messages** : pour des traitements asynchrones (envoi d'e-mails, génération de factures), ajouter des conteneurs *workers* si plus de 500 messages attendent dans la file RabbitMQ ou SQS.
+
+### Paramètres de sécurité indispensables
+
+Pour éviter qu'un système d'auto-scaling ne se comporte de manière instable :
+
+* **Minimum et maximum d'instances** : on fixe toujours un plancher (par exemple `min = 2` pour garantir la disponibilité même au calme) et un plafond (par exemple `max = 10` pour éviter qu'une attaque ou un bug applicatif ne déclenche le lancement de 500 serveurs et une facture hors de contrôle).  
+* **Période de stabilisation (*cooldown*)** : après l'ajout ou la suppression d'une instance, le système attend quelques minutes avant de prendre une nouvelle décision, le temps que le nouveau conteneur démarre et absorbe sa part de charge.
+
+## 4\. Orchestration de conteneurs et Kubernetes
+
+### Les limites de Docker Compose
+
+Docker Compose est un excellent outil, mais il pilote des conteneurs **sur une seule machine hôte**. Si ce serveur physique ou cette machine virtuelle tombe en panne, tous les conteneurs de la pile s'arrêtent en même temps. De plus, Compose ne surveille pas en continu l'état des conteneurs pour en recréer un automatiquement s'il a été tué ou si un nœud a disparu.
+
+Dès qu'on veut répartir des conteneurs sur **plusieurs serveurs** (un *cluster*), il faut un **orchestrateur**.
+
+### Ce que fait un orchestrateur
+
+Un orchestrateur gère un groupe de serveurs comme une ressource unique et assure plusieurs tâches automatiquement :
+
+* **Planification (*scheduling*)** : il choisit sur quel serveur démarrer chaque conteneur en fonction de la CPU et de la RAM disponibles.  
+* **Auto-guérison (*self-healing*)** : si un conteneur plante ou si un serveur entier devient injoignable, l'orchestrateur redémarre immédiatement les conteneurs manquants sur les autres serveurs sains du cluster.  
+* **Mises à jour sans coupure (*rolling updates*)** : lors du passage de `fil-rouge-api:2.0` à `fil-rouge-api:2.1`, il démarre progressivement les nouveaux conteneurs et n'arrête les anciens qu'une fois les nouveaux prêts à recevoir du trafic.  
+* **Découverte de services et équilibrage de charge interne** : chaque service dispose d'un nom DNS stable qui redirige automatiquement vers les conteneurs sains.
+
+### Architecture de Kubernetes en bref
+
+**Kubernetes** (souvent abrégé **K8s**) est devenu le standard de l'orchestration de conteneurs. Un cluster Kubernetes se divise en deux parties :
+
+```
++-----------------------------------+       +-----------------------------------+
+|          CONTROL PLANE            |       |           WORKER NODES            |
+|                                   |       |                                   |
+|  - API Server (point d'entrée)    | ----> |  Node 1 : [ Pod ] [ Pod ]         |
+|  - Scheduler (placement)          | ----> |  Node 2 : [ Pod ] [ Pod ]         |
+|  - Controller Manager (surveille) |       |  (exécutent containerd / kubelet) |
+|  - etcd (base d'état du cluster)  |       |                                   |
++-----------------------------------+       +-----------------------------------+
+```
+
+Les quatre concepts de base à connaître :
+
+* **Pod** : la plus petite unité déployable dans Kubernetes. Un Pod encapsule généralement un conteneur (parfois deux s'ils doivent partager étroitement le même réseau ou disque).  
+* **Deployment** : décrit l'état souhaité pour une application (quelle image Docker utiliser, combien de réplicas maintenir en vie, quelle stratégie de mise à jour appliquer).  
+* **Service** : fournit une adresse IP et un nom DNS fixes devant un ensemble de Pods éphémères, en assurant la répartition de charge interne.  
+* **Ingress** : gère l'accès HTTP/HTTPS depuis l'extérieur du cluster vers les différents Services (l'équivalent de notre reverse proxy Nginx).
+
+### Les offres Kubernetes managées et quand les choisir
+
+Installer et maintenir soi-même le Control Plane de Kubernetes est complexe. Tous les fournisseurs Cloud proposent des offres managées où ils gèrent le Control Plane pour vous :
+
+* **AWS** : EKS (*Elastic Kubernetes Service*)  
+* **Azure** : AKS (*Azure Kubernetes Service*)  
+* **GCP** : GKE (*Google Kubernetes Engine*)  
+* **OVHCloud** : Managed Kubernetes  
+* **Scaleway** : Kapsule
+
+> **Arbitrage important :** Kubernetes est puissant, mais il demande une équipe formée pour gérer ses manifestes YAML, ses mises à jour de version et sa sécurité réseau. Pour une application simple de quelques services (comme `fil-rouge-stack`), un service **CaaS serverless** (Google Cloud Run, AWS ECS Fargate, Scaleway Serverless Containers) offre l'auto-scaling, le load balancing HTTPS et le *self-healing* sans avoir à administrer de cluster Kubernetes.
+
+## 5\. Serverless et Functions as a Service (FaaS)
+
+Le terme **Serverless** regroupe des services où vous ne gérez aucun serveur ni aucune machine virtuelle, et où vous ne payez qu'à la consommation réelle. On distingue deux approches :
+
+### CaaS Serverless (conteneurs à la demande)
+
+Vous fournissez une image Docker standard (comme `fil-rouge-api:2.0`). La plateforme démarre des conteneurs à la volée lorsqu'une requête HTTP arrive et les éteint quand il n'y a plus d'activité (Google Cloud Run, AWS App Runner, Scaleway Serverless Containers). Votre code reste 100 % standard et portable.
+
+### FaaS — Functions as a Service
+
+Vous ne fournissez même plus d'image Docker ni de serveur HTTP complet : vous écrivez uniquement une **fonction unitaire** (en Python, Node.js, Go, Java) qui réagit à un événement précis :
+
+* réception d'une requête HTTP ;  
+* dépôt d'un fichier dans un bucket S3 (par exemple pour générer automatiquement une miniature d'image) ;  
+* arrivée d'un message dans une file d'attente ;  
+* déclenchement planifié (tâche cron).
+
+Exemples : **AWS Lambda**, **Azure Functions**, **Google Cloud Functions**, **Scaleway Functions**.
+
+### Limites du FaaS à connaître
+
+* **Cold start (démarrage à froid)** : si une fonction n'a pas été appelée depuis plusieurs minutes, la plateforme doit initialiser un micro-environnement avant de l'exécuter, ce qui ajoute de quelques dizaines de millisecondes à quelques secondes de latence sur la première requête.  
+* **Durée d'exécution limitée** : une fonction FaaS est conçue pour des tâches courtes (maximum 15 minutes sur AWS Lambda). Elle ne convient pas aux traitements longs ou aux connexions permanentes.  
+* **Couplage au fournisseur** : la signature de la fonction et la configuration des déclencheurs sont spécifiques à chaque fournisseur Cloud.
+
+## 6\. Haute disponibilité (HA) et reprise d'activité (PRA)
+
+### Haute disponibilité (*High Availability*)
+
+La haute disponibilité vise à **éviter toute interruption de service lors d'une panne matérielle ou logicielle courante** (crash d'un conteneur, panne d'un serveur physique, coupure électrique d'un datacenter).
+
+Elle repose sur deux principes :
+
+1. **Éliminer les points de défaillance uniques (SPOF — *Single Point of Failure*)** : chaque composant critique (load balancer, conteneurs API, base de données) doit exister en au moins deux exemplaires.  
+2. **Répartir sur plusieurs zones de disponibilité (Multi-AZ)** : placer les instances sur au moins deux datacenters distincts d'une même région. Si un datacenter subit une coupure réseau ou électrique, le load balancer bascule immédiatement 100 % du trafic vers le second datacenter.
+
+Pour la base de données PostgreSQL, les offres Cloud managées proposent un mode **Multi-AZ** : une instance principale reçoit les écritures et réplique en temps réel ses données vers une instance secondaire située dans un autre datacenter. En cas de panne de l'instance principale, le basculement (*failover*) vers la secondaire s'effectue automatiquement en quelques dizaines de secondes.
+
+### Reprise d'activité (PRA) et indicateurs RPO / RTO
+
+La haute disponibilité protège contre la panne d'un serveur ou d'un datacenter local. Le **PRA (Plan de Reprise d'Activité)** prévoit la reconstruction du service après un sinistre majeur (incendie d'un site complet, attaque par rançongiciel, suppression accidentelle de toute une base de données).
+
+Deux indicateurs chiffrés encadrent tout PRA :
+
+* **RPO (*Recovery Point Objective* — Perte de données maximale admissible)** : quelle quantité de données récentes l'entreprise accepte-t-elle de perdre ?  
+  * *Exemple* : si vous faites une sauvegarde toutes les 24 heures à minuit et qu'un sinistre survient à 18h, vous perdez 18 heures de données (RPO \= 24h). Avec une réplication continue des journaux de transactions PostgreSQL (*WAL*), le RPO descend à quelques secondes.  
+* **RTO (*Recovery Time Objective* — Durée maximale d'interruption admissible)** : combien de temps faut-il pour remettre l'application en ligne après le sinistre ?  
+  * *Exemple* : reconstruire un serveur à la main peut prendre 8 heures (RTO \= 8h). Redéployer automatiquement les conteneurs et restaurer la base depuis une sauvegarde automatisée peut ramener le RTO à 15 minutes.
+
+Plus le RPO et le RTO visés sont proches de zéro, plus l'architecture coûte cher à mettre en place et à maintenir. Il s'agit toujours d'un arbitrage métier entre le coût de l'infrastructure et le coût financier d'une heure d'arrêt.
+
+## 7\. Parallèle avec le Cloud
+
+Ce que vous allez expérimenter en local avec Docker Compose et Nginx reproduit exactement la mécanique des architectures Cloud :
+
+* **Nginx avec plusieurs réplicas `api`** : en local, Nginx joue le rôle d'un **AWS Application Load Balancer (ALB)**, **Azure Application Gateway** ou **Google Cloud Load Balancing** qui répartit les requêtes sur plusieurs conteneurs répartis dans différentes zones de disponibilité.  
+* **`docker compose up -d --scale api=3`** : en local, vous déclenchez manuellement l'ajout d'instances. Dans le Cloud, un groupe d'**Auto Scaling** (sur ECS, Kubernetes ou Cloud Run) exécute cette même action automatiquement dès que le CPU ou le trafic dépasse un seuil.  
+* **Arrêt brutal d'un conteneur (`docker kill`)** : en local, Nginx cesse d'envoyer du trafic vers l'instance arrêtée tant que les autres répondent. Dans le Cloud, l'orchestrateur (ECS, Kubernetes, Cloud Run) combine ce retrait du load balancer avec le **self-healing** : il recrée automatiquement un nouveau conteneur sain pour revenir au nombre d'instances souhaité.

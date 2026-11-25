@@ -1,0 +1,184 @@
+# Modèles Cloud, fournisseurs et portabilité
+
+## 1\. Les fondamentaux du Cloud Computing
+
+Le Cloud Computing consiste à consommer des ressources informatiques (serveurs, stockage, réseau, bases de données, services applicatifs) à la demande, via Internet, auprès d'un fournisseur qui gère l'infrastructure physique dans ses datacenters.
+
+Ce modèle change profondément la manière de concevoir et de financer un système d'information :
+
+* **Passage du CAPEX à l'OPEX** : en hébergement traditionnel (*on-premise*), une entreprise achète ses serveurs physiques à l'avance (dépenses d'investissement, ou CAPEX) et les amortit sur 3 à 5 ans, souvent en les surdimensionnant pour absorber un pic futur. Dans le Cloud, elle loue les ressources à l'heure, à la seconde ou à la requête (dépenses courantes, ou OPEX).  
+* **Provisionnement rapide** : obtenir un serveur ou une base de données prend quelques minutes via une console web ou une API, contre plusieurs semaines de commande et d'installation en salle serveur.  
+* **Facturation à l'usage (*pay-as-you-go*)** : une ressource arrêtée ou supprimée ne coûte plus rien (hors stockage conservé). En contrepartie, un oubli ou une mauvaise configuration peut vite faire grimper la facture.
+
+### Régions et zones de disponibilité
+
+Les fournisseurs Cloud organisent leurs infrastructures physiques en deux niveaux :
+
+* **Région** : une zone géographique précise (par exemple Paris, Francfort, Gravelines, Irlande). Le choix de la région influence la latence pour les utilisateurs et la localisation légale des données.  
+* **Zone de disponibilité (*Availability Zone* ou AZ)** : un ou plusieurs datacenters physiquement distincts au sein d'une même région, chacun disposant de sa propre alimentation électrique, de son refroidissement et de ses liens réseau. Répartir une application sur plusieurs AZ permet de continuer à fonctionner même si un datacenter tombe en panne.
+
+## 2\. Les modèles de déploiement
+
+Avant de choisir un service précis, il faut déterminer où et comment les infrastructures seront hébergées.
+
+### Cloud public
+
+Les serveurs physiques appartiennent à un fournisseur tiers (AWS, Azure, GCP, OVHCloud, Scaleway) et sont mutualisés entre de nombreux clients. L'isolation entre clients est assurée de façon logique (virtualisation, réseaux privés virtuels, chiffrement).
+
+* **Avantages** : aucun matériel à acheter ni à maintenir, large catalogue de services managés, forte capacité d'évolution.  
+* **Limites** : dépendance vis-à-vis du fournisseur, maîtrise nécessaire des coûts variables, contraintes réglementaires possibles selon la nationalité du fournisseur.
+
+### Cloud privé
+
+L'infrastructure est dédiée à une seule organisation. Elle peut être hébergée dans les propres locaux de l'entreprise (avec des outils comme OpenStack ou VMware) ou dans des serveurs dédiés loués chez un hébergeur (on parle alors de *Cloud privé hébergé*).
+
+* **Avantages** : contrôle total sur le matériel, la sécurité physique et la localisation des données ; coûts plus prévisibles à charge constante.  
+* **Limites** : investissement initial élevé, maintenance matérielle à gérer, capacité limitée par le matériel acheté.
+
+### Cloud hybride
+
+Le Cloud hybride combine un environnement privé (ou *on-premise*) et un Cloud public, reliés par un réseau sécurisé (VPN ou lien fibre dédié).
+
+* **Cas d'usage courants** : conserver une base de données sensible ou un vieux logiciel interne sur site tout en hébergeant le portail web client dans le Cloud public ; déborder temporairement sur le Cloud public lors d'un pic d'activité saisonnier (*cloud bursting*).  
+* **Limites** : architecture réseau plus complexe, nécessité de maintenir des compétences sur les deux environnements.
+
+### Multi-cloud
+
+Le multi-cloud consiste à utiliser simultanément les services de plusieurs fournisseurs de Cloud public (par exemple AWS pour les applicatifs et GCP pour l'analyse de données, ou OVHCloud pour l'hébergement principal et AWS pour un service spécifique).
+
+* **Avantages** : choisir le meilleur service chez chaque fournisseur, limiter la dépendance à un acteur unique, répondre à des exigences de continuité d'activité très strictes.  
+* **Limites** : forte complexité technique (deux consoles, deux systèmes de droits IAM, deux facturations, deux ensembles de compétences à entretenir) et coûts de transfert réseau entre fournisseurs. Le multi-cloud est rarement pertinent pour une petite équipe.
+
+## 3\. Les modèles de services : IaaS, PaaS, CaaS et SaaS
+
+Dans le Cloud, tout repose sur une question simple : **jusqu'où voulez-vous déléguer la gestion technique au fournisseur ?** Plus on monte dans les couches, moins on a de maintenance à faire, mais moins on a de contrôle fin sur le système sous-jacent.
+
+### Périmètre de responsabilité
+
+| Couche technique | On-Premise | IaaS | CaaS | PaaS | SaaS |
+| :---- | :---: | :---: | :---: | :---: | :---: |
+| **Données et utilisateurs** | Client | Client | Client | Client | Client |
+| **Code applicatif** | Client | Client | Client | Client | Fournisseur |
+| **Image de conteneur / Dépendances** | Client | Client | Client | Fournisseur | Fournisseur |
+| **Runtime (Python, Node, JVM...)** | Client | Client | Fournisseur / Image | Fournisseur | Fournisseur |
+| **Système d'exploitation (OS)** | Client | Client | Fournisseur | Fournisseur | Fournisseur |
+| **Virtualisation / Hyperviseur** | Client | Fournisseur | Fournisseur | Fournisseur | Fournisseur |
+| **Serveurs, stockage, réseau physique** | Client | Fournisseur | Fournisseur | Fournisseur | Fournisseur |
+
+### IaaS — Infrastructure as a Service
+
+Le fournisseur met à disposition des machines virtuelles, des disques et des réseaux virtuels. Vous choisissez votre système d'exploitation (Ubuntu, Debian, Windows Server) et vous installez ce que vous voulez dessus.
+
+* **Exemples** : AWS EC2, Azure Virtual Machines, Google Compute Engine, OVHCloud Public Cloud Instances, Scaleway Instances.  
+* **Pour notre application fil rouge** : vous louez une ou deux VMs Linux, vous vous connectez en SSH, vous installez Docker, vous configurez le pare-feu, vous mettez à jour l'OS chaque mois et vous lancez `docker compose up -d`. Vous gérez aussi les sauvegardes de PostgreSQL.  
+* **Quand le choisir** : migration rapide d'un existant (*lift and shift*), besoin de contrôler finement l'OS ou le noyau, logiciels spécifiques qui ne rentrent pas dans un moule managé.
+
+### CaaS — Containers as a Service
+
+Le fournisseur gère les serveurs, le système d'exploitation et l'orchestration des conteneurs. Vous lui fournissez simplement vos **images Docker** (stockées dans un registre) et une configuration (ports, variables d'environnement, CPU/RAM).
+
+On distingue deux niveaux de CaaS :
+
+* **CaaS sans gestion de cluster (Serverless Containers)** : AWS Fargate (ECS), Google Cloud Run, Azure Container Apps, Scaleway Serverless Containers. Vous indiquez l'image et les ressources ; le fournisseur démarre et met à l'échelle vos conteneurs automatiquement.
+
+* **CaaS basé sur Kubernetes managé** : AWS EKS, Azure AKS, Google GKE, OVHCloud Managed Kubernetes, Scaleway Kapsule. Le fournisseur gère le plan de contrôle Kubernetes, et vous déployez vos conteneurs sur des nœuds.
+
+* **Pour notre application fil rouge** : vous poussez votre image `fil-rouge-api:2.0` sur un registre privé, puis vous la déployez sur Cloud Run, ECS Fargate ou Scaleway Serverless Containers. Le reverse proxy HTTPS est directement fourni par la plateforme, et la base PostgreSQL est confiée à un service managé (PaaS).
+
+* **Quand le choisir** : dès que votre application est déjà conteneurisée avec Docker. C'est aujourd'hui le modèle privilégié pour déployer des API et des microservices sans subir la maintenance des serveurs Linux.
+
+### PaaS — Platform as a Service
+
+Le fournisseur gère toute l'infrastructure, l'OS, les runtimes (Python, PHP, Node.js, Java) et le serveur web. Vous poussez simplement votre **code source** (souvent via Git) et la plateforme s'occupe de le compiler, le démarrer, le sécuriser en HTTPS et le redémarrer en cas d'erreur.
+
+Le PaaS couvre aussi les **bases de données managées** (AWS RDS, Google Cloud SQL, Azure Database for PostgreSQL, OVHCloud Managed Databases, Scaleway Managed Databases) où le fournisseur gère les sauvegardes automatiques, les mises à jour mineures et la réplication.
+
+* **Exemples applicatifs** : Azure App Service, AWS Elastic Beanstalk, Google App Engine, Clever Cloud, Scalingo, Heroku, Render.  
+* **Pour notre application fil rouge** : vous connectez votre dépôt Git (contenant `app.py` et `requirements.txt`) à la plateforme PaaS, sans même avoir besoin d'écrire de `Dockerfile` ni de configurer Nginx, et vous créez une base PostgreSQL managée en quelques clics.  
+* **Quand le choisir** : petite équipe qui veut se concentrer uniquement sur le code métier, besoin de mettre en ligne rapidement, absence de compétences en administration système.
+
+### SaaS — Software as a Service
+
+L'application complète est fournie clé en main et accessible depuis un navigateur ou une API. Le client ne fait que configurer le service et gérer ses utilisateurs et ses données.
+
+* **Exemples** : Microsoft 365, Google Workspace, Salesforce, Slack, GitHub, Datadog.  
+* **Quand le choisir** : pour toutes les fonctions standards qui ne constituent pas le cœur différenciant de l'entreprise (messagerie, CRM, gestion de tickets, forge Git, supervision).
+
+## 4\. Panorama des fournisseurs Cloud
+
+Le marché est dominé par trois grands acteurs américains (les *hyperscalers*), complétés en Europe par des fournisseurs alternatifs très présents sur les sujets de souveraineté et de tarification prévisible.
+
+### Les hyperscalers (AWS, Azure, GCP)
+
+* **AWS (Amazon Web Services)** : pionnier et leader mondial en parts de marché. Catalogue le plus vaste (plus de 200 services), documentation abondante et très grand écosystème de partenaires. En contrepartie, la console et la gestion des droits (IAM) sont denses et la tarification peut être complexe à anticiper.  
+* **Microsoft Azure** : très fortement implanté dans les grandes entreprises et les administrations déjà équipées de l'écosystème Microsoft (Active Directory / Entra ID, Windows Server, Microsoft 365, SQL Server). Excellente intégration pour les environnements hybrides.  
+* **Google Cloud Platform (GCP)** : reconnu pour son réseau mondial, ses services de données et d'intelligence artificielle (BigQuery, Vertex AI) et son expertise historique sur les conteneurs (Kubernetes est né chez Google ; GKE et Cloud Run sont particulièrement matures et simples à prendre en main).
+
+### Les acteurs européens (OVHCloud, Scaleway)
+
+* **OVHCloud** : premier fournisseur européen, basé en France. Propose un large choix entre serveurs dédiés (*bare metal*), Cloud privé et Cloud public (basé sur des standards open source comme OpenStack et Kubernetes). Tarifs transparents (le trafic réseau sortant est souvent inclus ou très peu coûteux) et qualifications de sécurité reconnues en France (notamment **SecNumCloud** sur certaines offres dédiées).  
+* **Scaleway** : fournisseur français (groupe Iliad), très apprécié des équipes techniques et des startups pour la clarté de sa console et son écosystème orienté Cloud-natif (Kubernetes Kapsule, Serverless Containers, bases managées, registre de conteneurs). Datacenters en France (Paris), Pays-Bas et Pologne, avec une forte attention portée à l'efficacité énergétique.
+
+### Enjeux de souveraineté et de conformité
+
+Choisir un fournisseur ne se résume pas à comparer un catalogue technique. Trois notions reviennent systématiquement dans les arbitrages en Europe :
+
+* **RGPD (Règlement Général sur la Protection des Données)** : impose de savoir où sont stockées les données personnelles et d'encadrer leur transfert hors de l'Union européenne. Tous les grands fournisseurs (y compris AWS, Azure et GCP) disposent de régions en France ou en Europe.  
+* **Cloud Act (loi américaine de 2018\)** : autorise les autorités américaines à exiger l'accès à des données hébergées par une entreprise de droit américain, **même si les serveurs physiques sont situés en France**. Cela ne bloque pas l'usage d'AWS/Azure/GCP pour la majorité des projets privés, mais peut être rédhibitoire pour des données très sensibles (santé, défense, secteur public).  
+* **SecNumCloud** : qualification délivrée par l'ANSSI (Agence nationale de la sécurité des systèmes d'information) qui garantit un très haut niveau de sécurité technique et une immunité face aux lois extraterritoriales (comme le Cloud Act). Elle est souvent exigée pour les projets d'administrations ou d'opérateurs d'importance vitale (OIV).
+
+### Tableau de correspondance des services clés
+
+| Besoin | AWS | Azure | GCP | OVHCloud | Scaleway |
+| :---- | :---- | :---- | :---- | :---- | :---- |
+| **VM (IaaS)** | EC2 | Virtual Machines | Compute Engine | Public Cloud Instances | Instances |
+| **Conteneurs sans cluster (CaaS)** | ECS Fargate / App Runner | Container Apps | Cloud Run | — *(via Kubernetes)* | Serverless Containers |
+| **Kubernetes managé (CaaS)** | EKS | AKS | GKE | Managed Kubernetes | Kapsule |
+| **Registre Docker** | ECR | ACR | Artifact Registry | Managed Private Registry | Container Registry |
+| **PostgreSQL managé (PaaS)** | RDS | Azure Database for PostgreSQL | Cloud SQL | Managed Databases | Managed Databases |
+| **Stockage objet** | S3 | Blob Storage | Cloud Storage | Object Storage (S3) | Object Storage (S3) |
+
+## 5\. Le vendor lock-in et les stratégies de portabilité
+
+Le **vendor lock-in** (verrouillage fournisseur) désigne la situation dans laquelle une entreprise ne peut plus quitter son fournisseur Cloud — ou uniquement à un coût financier et technique prohibitif.
+
+### Les principales causes de verrouillage
+
+1. **Services propriétaires spécifiques** : utiliser une base de données propre à un seul fournisseur (comme AWS DynamoDB ou Azure Cosmos DB) ou un service métier sans équivalent exact ailleurs oblige à réécrire une partie du code applicatif pour migrer.  
+2. **Frais de sortie réseau (*egress fees*)** : chez les hyperscalers, faire entrer des données dans le Cloud est gratuit, mais les faire sortir (par exemple pour déplacer plusieurs téraoctets vers un autre fournisseur) est facturé au gigaoctet.  
+3. **Automatisation et droits spécifiques** : scripts écrits avec l'outil propriétaire du fournisseur (CloudFormation sur AWS, Bicep sur Azure) et gestion fine des droits IAM non transférable directement.  
+4. **Compétences humaines** : une équipe formée pendant trois ans sur l'écosystème AWS aura besoin de temps pour retrouver la même aisance sur GCP ou Scaleway.
+
+### Stratégies concrètes de portabilité et de réversibilité
+
+Il est possible de réduire fortement ce risque dès la conception de l'architecture :
+
+* **Standardiser l'empaquetage avec Docker (OCI)** : une image Docker tourne à l'identique sur AWS, Azure, GCP, OVHCloud, Scaleway ou un serveur local. C'est la première brique de portabilité.  
+* **Privilégier les moteurs open source standards** : utiliser **PostgreSQL** managé (sur RDS, Cloud SQL ou Scaleway) plutôt qu'une base propriétaire permet de migrer les données avec un simple export/import standard (`pg_dump` / `pg_restore`), sans toucher au code Python de l'API.  
+* **Utiliser l'API S3 pour le stockage de fichiers** : le protocole S3 d'Amazon est devenu un standard de fait, supporté nativement par OVHCloud, Scaleway, Cloudflare R2 et les solutions auto-hébergées (MinIO). Changer de fournisseur revient souvent à modifier une URL et une clé d'accès.  
+* **S'appuyer sur Kubernetes pour l'orchestration complexe** : les fichiers de déploiement Kubernetes restent presque identiques entre EKS, AKS, GKE, OVHCloud et Scaleway.  
+* **Décrire l'infrastructure avec un outil multi-fournisseurs** : utiliser **Terraform** (ou OpenTofu) plutôt que CloudFormation ou Bicep permet de garder la même méthode et le même langage d'un fournisseur à l'autre.  
+* **Isoler les dépendances dans le code** : si vous devez utiliser un service spécifique (envoi d'e-mails, file de messages), passez par une couche d'abstraction simple dans votre code afin de n'avoir qu'un seul module à changer en cas de migration.
+
+### L'arbitrage à garder en tête
+
+Vouloir **zéro verrouillage** a un coût. Si vous refusez tous les services managés pour rester 100 % portable (par exemple en gérant vous-même vos bases de données et vos files de messages dans des VMs), vous perdez une grande partie de l'intérêt du Cloud et vous augmentez votre charge de maintenance.
+
+La démarche la plus pragmatique consiste à :
+
+* rester portable sur le cœur de l'application (images Docker, bases open source comme PostgreSQL, protocole S3) ;  
+* accepter un niveau de dépendance maîtrisé sur les couches d'exécution managées (Cloud Run, ECS Fargate, Serverless Containers) qui font gagner beaucoup de temps au quotidien et restent faciles à remplacer tant que l'application est conteneurisée.
+
+## 6\. Grille d'arbitrage pour choisir une architecture Cloud
+
+Pour préparer un choix d'architecture devant une direction technique ou un client, cinq critères permettent de trancher objectivement :
+
+| Critère | Question à poser | Impact sur le choix |
+| :---- | :---- | :---- |
+| **Compétences de l'équipe** | L'équipe sait-elle administrer Linux, Docker ou Kubernetes ? | Peu de compétences infra → PaaS ou CaaS serverless. Équipe expérimentée → CaaS / Kubernetes ou IaaS. |
+| **Budget et prévisibilité** | Cherche-t-on le coût le plus bas au démarrage ou un budget mensuel fixe ? | Trafic faible/irrégulier → CaaS serverless (facturé à la requête). Charge stable → Instances ou PaaS à tarif fixe, acteurs européens. |
+| **Souveraineté et conformité** | Les données sont-elles soumises au RGPD strict, à la santé (HDS) ou au secteur public (SecNumCloud) ? | Contrainte forte → OVHCloud, Scaleway ou Cloud privé qualifié. Contrainte standard → Régions UE des hyperscalers ou acteurs européens. |
+| **Réversibilité** | Faut-il pouvoir changer d'hébergeur en quelques semaines ? | Forte exigence → Docker \+ PostgreSQL \+ S3 \+ pas de services propriétaires. |
+| **Délai de mise en ligne** | Combien de temps a-t-on avant la mise en production ? | Délai court → PaaS ou CaaS serverless \+ BDD managée (évite de monter un cluster Kubernetes ou des VMs à la main). |
+
+&nbsp;
