@@ -3,8 +3,8 @@
 ## Objectifs
 
 * Diagnostiquer des dysfonctionnements courants dans une chaîne de livraison logicielle et poser un contrat clair entre équipes Dev et Ops.  
-* Savoir lire un fichier de pipeline CI/CD réel (GitHub Actions) pour vérifier ses garde-fous qualité et sécurité.  
-* Choisir le bon niveau d'automatisation (CI, Livraison Continue, Déploiement Continu) selon la criticité d'un projet.  
+* Auditer le fonctionnement d'une chaîne CI/CD décrite par un prestataire pour vérifier ses garde-fous qualité et sécurité.  
+* Choisir le bon niveau d'automatisation (Intégration Continue, Livraison Continue, Déploiement Continu) selon la criticité d'un projet.  
 * Arbitrer de manière argumentée l'adoption ou le refus de Docker face à différents contextes métiers.  
 * Poser les bonnes exigences de sécurité et d'industrialisation pour le passage vers le Cloud.
 
@@ -16,89 +16,42 @@
 
 Vous reprenez le pilotage d'un projet web développé par un prestataire externe. Lors des derniers mois, trois problèmes se sont répétés :
 
-* L'équipe construit une première image `projet-api:recette` pour les tests métiers, puis reconstruit une seconde image `projet-api:prod` la veille de la mise en production. Lors de la dernière livraison, l'application validée en recette a planté en production à cause d'une bibliothèque Python mise à jour entre les deux builds.  
+* L'équipe fabrique une première image pour les tests métiers en recette, puis en reconstruit une seconde la veille de la mise en production. Lors de la dernière livraison, l'application validée en recette a planté en production à cause d'une bibliothèque mise à jour entre les deux fabrications.  
 * Lors de cet incident, les développeurs affirment que *« le code est bon »* et renvoient la faute sur l'équipe d'infrastructure, qui répond que *« les dépendances manquantes n'étaient pas documentées »*.  
 * À chaque arrivée d'un nouveau développeur, il faut une journée complète pour installer le poste de travail en suivant une documentation souvent obsolète.
 
 ### Questions d'analyse
 
-1. **Cycle *Build, Ship, Run* :** quel principe clé du cours n'est pas respecté dans la façon dont le prestataire construit ses images pour la recette et la production ? Comment l'équipe doit-elle procéder pour adapter une seule et même image à deux environnements différents (recette et production) ?  
+1. **Règle d'or du cycle *Build, Ship, Run* :** quel principe fondamental du cours n'est pas respecté par le prestataire ? Comment l'équipe doit-elle procéder pour adapter une seule et même image à deux environnements différents (recette et production) ?  
 2. **Contrat Dev / Ops :** en vous appuyant sur l'approche DevOps apportée par Docker, quelle répartition claire des responsabilités devez-vous fixer entre les **développeurs (Dev)** et l'**équipe d'infrastructure (Ops)** pour éviter ce renvoi de responsabilité ?  
-3. **Intégration (*onboarding*) :** en quoi Docker et Docker Compose permettent-ils de ramener l'installation d'un nouveau poste développeur d'une journée à quelques minutes ? Quelles sont les grandes étapes que le nouvel arrivant aura simplement à suivre ?
+3. **Intégration (*onboarding*) :** comment Docker et Docker Compose permettent-ils de ramener l'installation d'un nouveau poste développeur d'une journée à quelques minutes ? Quelles sont les trois étapes simples que le nouvel arrivant aura à suivre ?
 
 ---
 
-## Atelier 2 : Auditer un pipeline CI/CD réel
+## Atelier 2 : Auditer la chaîne CI/CD proposée par un prestataire
 
 ### Mise en situation
 
-Avant de valider le passage en industrialisation de l'application fil rouge, l'équipe technique vous soumet son fichier de pipeline **GitHub Actions** (`.github/workflows/ci.yml`) :
+Avant de valider l'industrialisation de votre application, le prestataire vous présente par écrit le déroulement prévu de sa chaîne CI/CD automatisée :
 
-```yaml
-name: CI-CD API Fil Rouge
+> **Proposition du prestataire :**
 
-on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/fil-rouge-api
-
-jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Récupérer le code source
-        uses: actions/checkout@v4
-
-      - name: Construire l'image Docker
-        run: |
-          docker build -t ${{ env.IMAGE_NAME }}:${{ github.sha }} ./api
-
-      - name: Lancer les tests unitaires dans le conteneur
-        run: |
-          docker run --rm ${{ env.IMAGE_NAME }}:${{ github.sha }} python -m unittest discover -s tests
-
-      - name: Smoke test de la stack complète
-        run: |
-          cp .env.example .env
-          docker compose up -d --build
-          sleep 5
-          curl http://localhost:8080/health
-          docker compose down -v
-
-      - name: Connexion au registre
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Publier l'image sur le registre
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          docker tag ${{ env.IMAGE_NAME }}:${{ github.sha }} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-```
-
-&nbsp;
+> 1. Dès qu'un développeur propose une modification (même en cours de relecture), la chaîne démarre directement la construction de l'image Docker.  
+> 2. L'image construite est systématiquement étiquetée avec le nom « dernière version » (`latest`).  
+> 3. Des tests unitaires sont exécutés, puis un test rapide vérifie que l'application répond au démarrage (sans vérifier si le serveur renvoie une erreur interne).  
+> 4. La chaîne se connecte au registre privé à l'aide d'un mot de passe inscrit directement dans le fichier de configuration du pipeline, puis publie l'image immédiatement — y compris pour les modifications encore en attente de validation.  
+> 5. Pour faire tourner cette chaîne, le prestataire propose d'installer un serveur **Jenkins** dédié en interne plutôt que d'utiliser GitHub Actions ou GitLab CI.
 
 ### Questions d'audit
 
-1. **Étape manquante :** parmi les étapes types d'un pipeline Docker vues dans le cours, une première étape de vérification statique (*lint*) est absente avant le build. Quel est son rôle, et quels outils (pour Python et pour le `Dockerfile`) pourriez-vous recommander à l'équipe ?  
-2. **Anomalie cachée dans le smoke test :** examinez attentivement la ligne `curl http://localhost:8080/health`. Une option essentielle a été oubliée dans ce fichier. Laquelle, et quel risque concret crée cet oubli si l'API renvoie une erreur HTTP `500` ou `404` ?  
-3. **Garde-fous avant publication :**  
-   * Lorsqu'un développeur ouvre une *Pull Request* vers `main`, les étapes de connexion et de publication (`push`) sont-elles exécutées ? Pourquoi ?  
-   * Que doit faire le pipeline si l'étape de tests unitaires échoue, et quelle garantie cela apporte-t-il pour la production ?  
-4. **Traçabilité et sécurité :**  
-   * Pourquoi est-il pertinent d'étiqueter l'image avec `${{ github.sha }}` plutôt qu'avec `:latest` ?  
-   * Quel est le rôle de `${{ secrets.GITHUB_TOKEN }}` dans ce fichier ?  
-5. **Choix d'outillage :** la direction technique hésite encore entre **GitHub Actions**, **GitLab CI** et **Jenkins** (déjà présent en interne). Quelle charge opérationnelle spécifique à **Jenkins** devez-vous mettre en avant dans le comparatif ?
+1. **Étape manquante avant la construction :** quelle première étape de vérification automatique manque avant même de construire l'image ? Quel est son rôle ?  
+2. **Repérer les 4 failles qualité et sécurité :** identifiez dans la proposition du prestataire les **quatre mauvaises pratiques** suivantes, puis expliquez en une phrase le risque concret de chacune et la correction à exiger :  
+   * le choix de l'étiquette (tag) de l'image ;  
+   * le comportement du test de démarrage si l'application renvoie une erreur serveur ;  
+   * le moment où l'image est publiée dans le registre ;  
+   * la manière dont le mot de passe du registre est stocké.  
+3. **Règle d'arrêt en cas d'échec :** que doit obligatoirement faire la chaîne automatisée si les tests échouent, et quelle garantie cela vous apporte-t-il en tant que chef de projet ?  
+4. **Arbitrage d'outillage :** quelle charge opérationnelle spécifique à **Jenkins** devez-vous mettre en avant face à **GitHub Actions** ou **GitLab CI** avant de valider le choix du prestataire ?
 
 ---
 
@@ -109,7 +62,7 @@ jobs:
 Vous accompagnez trois projets différents dans votre organisation :
 
 * **Contexte 1 — Portail citoyen d'un organisme public :** chaque mise en production nécessite un feu vert formel de la maîtrise d'ouvrage après recette, mais l'équipe souhaite que l'image validée soit automatiquement construite, testée et prête à être déployée sur simple validation humaine.  
-* **Contexte 2 — Service numérique grand public très mature :** l'équipe dispose d'une couverture de tests automatisés très complète et souhaite que chaque correctif validé par le pipeline parte automatiquement en production sans aucune action manuelle.  
+* **Contexte 2 — Service numérique grand public très mature :** l'équipe dispose d'une couverture de tests automatisés très complète et souhaite que chaque correctif validé par la chaîne automatisée parte directement en production sans aucune action manuelle.  
 * **Contexte 3 — Projet en démarrage :** l'équipe souhaite d'abord sécuriser la fusion quotidienne du code des développeurs pour détecter les régressions quelques minutes après leur introduction, sans encore automatiser la publication ni le déploiement.
 
 ### Questions d'analyse
@@ -125,17 +78,17 @@ Vous siégez au comité d'architecture qui doit valider ou refuser la conteneuri
 
 | Projet | Contexte | Décision (Oui / Non), justification et alternative éventuelle |
 | :---- | :---- | :---- |
-| **Projet A — Site vitrine institutionnel** | Site purement statique (HTML, CSS, JS) généré avec Hugo, mis à jour une fois par mois par l'équipe communication. |  |
-| **Projet B — Plateforme interne de gestion** | Architecture composée d'une API Python, de workers asynchrones, d'un cache Redis et d'une base PostgreSQL. Équipe de 6 développeurs, livraisons hebdomadaires, migration Cloud prévue. |  |
-| **Projet C — Progiciel comptable legacy** | Ancien logiciel Windows avec interface graphique lourde, protégé par une clé USB physique de licence, mis à jour une fois par an par son éditeur. |  |
-| **Projet D — Base de données critique en équipe réduite** | Base de données à très fortes entrées/sorties disque, maintenue par un seul développeur sans expérience Linux ni temps dédié pour suivre les mises à jour de sécurité des images et des serveurs hôtes. |  |
+| **Projet A — Site vitrine institutionnel** | Site purement statique (pages vitrines simples) mis à jour une fois par mois par l'équipe communication. |  |
+| **Projet B — Plateforme interne de gestion** | Application composée d'une API, de tâches de fond, d'un cache et d'une base de données. Équipe de 6 développeurs, livraisons hebdomadaires, migration Cloud prévue. |  |
+| **Projet C — Progiciel comptable ancien** | Ancien logiciel Windows avec interface graphique lourde, protégé par une clé USB physique de licence, mis à jour une fois par an par son éditeur. |  |
+| **Projet D — Base de données critique en équipe réduite** | Base de données très sollicitée, maintenue par un seul développeur sans expérience Linux ni temps dédié pour suivre les mises à jour de sécurité des images et des serveurs hôtes. |  |
 
 ---
 
 ## Atelier 5 : Préparer et sécuriser le passage au Cloud
 
-Votre pipeline CI/CD est prêt en théorie ; vous préparez maintenant son raccordement aux services Cloud de l'entreprise.
+Votre chaîne CI/CD est validée sur le papier ; vous préparez maintenant son raccordement aux services Cloud de l'entreprise.
 
-1. **Runners managés :** pourquoi privilégie-t-on généralement des *runners* managés dans le Cloud (GitHub Actions, GitLab SaaS, AWS CodeBuild, Google Cloud Build, Azure Pipelines) plutôt que de maintenir un serveur de build dédié en interne ?  
-2. **Authentification vers le registre Cloud :** un prestataire vous propose de créer des clés d'accès permanentes (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) et de les stocker dans les secrets du dépôt Git pour pousser les images vers AWS ECR. Quelle alternative recommandée dans le cours devez-vous lui demander à la place, et quel est son principe de fonctionnement ?  
-3. **Déploiement sur Kubernetes (GitOps) :** si l'application est déployée à terme sur un cluster Kubernetes, expliquez en 2 ou 3 phrases le principe du modèle **GitOps** (avec **ArgoCD** ou **Flux**) pour déclencher la mise à jour de l'image.
+1. **Serveurs de build (*runners*) managés :** pourquoi privilégie-t-on généralement des *runners* managés dans le Cloud (GitHub Actions, GitLab SaaS, AWS CodeBuild, Google Cloud Build, Azure Pipelines) plutôt que d'acheter et de maintenir un serveur de build dédié en interne ?  
+2. **Authentification vers le Cloud :** un prestataire propose de créer des clés d'accès permanentes à votre compte Cloud et de les enregistrer dans les paramètres du dépôt Git pour autoriser la publication des images. Quelle alternative recommandée dans le cours devez-vous lui demander à la place, et quel est son principe de fonctionnement ?  
+3. **Déploiement sur Kubernetes (GitOps) :** si l'application est déployée à terme sur un cluster Kubernetes, expliquez en 2 ou 3 phrases le principe du modèle **GitOps** (avec **ArgoCD** ou **Flux**) pour déclencher la mise à jour de l'image sans donner les clés complètes du cluster à la chaîne CI.
