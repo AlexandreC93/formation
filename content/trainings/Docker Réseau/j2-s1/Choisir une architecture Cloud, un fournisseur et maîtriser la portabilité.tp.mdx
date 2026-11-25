@@ -1,0 +1,142 @@
+# Choisir une architecture Cloud, un fournisseur et maîtriser la portabilité
+
+## Objectifs
+
+* Comparer concrètement le partage de responsabilités et la charge opérationnelle entre **IaaS**, **CaaS** et **PaaS** pour héberger l'application fil rouge.
+
+* Sélectionner un modèle de déploiement, un modèle de service et un fournisseur Cloud adaptés à des contraintes de budget, de compétences et de souveraineté (**RGPD**, **Cloud Act**, **SecNumCloud**).
+
+* Auditer une proposition d'architecture face aux risques de verrouillage fournisseur (**vendor lock-in**) et proposer des mesures de réversibilité réalistes.
+
+* Maîtriser les leviers financiers (**CAPEX / OPEX**, *pay-as-you-go*) et la résilience géographique (**Régions** et **Zones de disponibilité**).
+
+> **Mode d'emploi :** ce TP ne contient aucun code et ne nécessite aucune commande dans le terminal. Il se réalise en autonomie ou en binôme en vous appuyant sur le support de cours **J2 \- S1**. Chaque atelier vous place en situation de pilotage ou d'audit projet.
+
+## Atelier 1 : Répartir les responsabilités entre IaaS, CaaS et PaaS
+
+### Mise en situation
+
+Vous devez déployer l'application fil rouge (reverse proxy, API Python Flask, base de données PostgreSQL) dans le Cloud. Trois options d'architecture sont étudiées en comité projet :
+
+* **Option 1 (IaaS)** : location d'une machine virtuelle Linux nue sur laquelle votre équipe installe Docker et exécute toute la pile via Docker Compose.
+
+* **Option 2 (CaaS sans gestion de cluster \+ PaaS BDD)** : déploiement de votre image Docker sur un service de conteneurs managés (type Cloud Run, AWS Fargate ou Scaleway Serverless Containers) associé à une base PostgreSQL managée.
+
+* **Option 3 (PaaS complet)** : envoi direct du code source Python (sans image Docker) sur une plateforme applicative managée (type Azure App Service, Clever Cloud ou Scalingo) associé à une base PostgreSQL managée.
+
+### Questions d'analyse
+
+1. **Matrice de responsabilités :** pour chacune des tâches ci-dessous, indiquez qui en assure la gestion au quotidien (**Client** ou **Fournisseur**) dans les trois options :
+
+| Tâche technique ou opérationnelle | Option 1 (IaaS) | Option 2 (CaaS \+ PaaS BDD) | Option 3 (PaaS complet) |
+| :---- | :---- | :---- | :---- |
+| Maintenance du matériel physique et du datacenter |  |  |  |
+| Mises à jour de sécurité du système d'exploitation (OS) |  |  |  |
+| Fourniture et gestion du reverse proxy HTTPS en façade |  |  |  |
+| Maintenance de l'image Docker et des dépendances Python |  |  |  |
+| Sauvegardes quotidiennes et restauration de PostgreSQL |  |  |  |
+| Évolution et correction du code métier de l'application |  |  |  |
+
+2. **Sort du reverse proxy Nginx :** dans l'Option 2 (CaaS) et l'Option 3 (PaaS), pourquoi n'avez-vous plus besoin de déployer et de configurer vous-mêmes le conteneur Nginx utilisé en local ?
+
+3. **Deux niveaux de CaaS :** le support de cours distingue deux approches au sein du **CaaS** (*Serverless Containers* vs *Kubernetes managé*). Quelle différence concrète cela implique-t-il pour la charge de travail de votre équipe ?
+
+4. **Arbitrage projet :** une petite équipe de deux développeurs sans administrateur système doit mettre en ligne cette application conteneurisée en moins d'une semaine. Quelle option recommandez-vous et pourquoi ?
+
+## Atelier 2 : Arbitrer trois scénarios d'hébergement Cloud
+
+Vous accompagnez trois projets différents. Pour chacun d'eux, proposez une recommandation structurée en précisant :
+
+* le **modèle de déploiement** retenu (Cloud public, privé, hybride ou multi-cloud) ;
+
+* les **modèles de services** pour l'API et la base de données (IaaS, CaaS, PaaS) ;
+
+* le **fournisseur Cloud** choisi (parmi AWS, Azure, GCP, OVHCloud, Scaleway) et le **nom exact des services** correspondants (registre d'images, exécution de l'API, base PostgreSQL) en vous aidant du tableau de correspondance du cours ;
+
+* votre **justification** au regard des contraintes du contexte.
+
+### Scénario A — Portail pour un établissement public français
+
+* **Contexte** : l'application traite des données administratives sensibles de citoyens français. La direction impose que les données restent en France et exige une immunité juridique face aux lois extraterritoriales américaines, idéalement avec une qualification reconnue par l'ANSSI ou un acteur souverain français.
+
+* **Équipe** : deux développeurs qui maîtrisent Docker et PostgreSQL, mais qui n'ont aucune expérience sur Kubernetes.
+
+* **Trafic** : modéré en journée, quasi nul la nuit et le week-end.
+
+### Scénario B — Service interne pour un grand groupe industriel
+
+* **Contexte** : l'entreprise utilise déjà Microsoft 365 et Entra ID (Active Directory) pour l'ensemble de ses collaborateurs, et possède un datacenter interne où tourne son ERP historique. La nouvelle API doit interroger cet ERP interne via une liaison réseau sécurisée tout en restant accessible aux équipes commerciales sur le terrain.
+
+* **Équipe** : équipe informatique structurée, habituée à l'écosystème Microsoft et à Docker.
+
+* **Contrainte** : rattacher l'hébergement au contrat Cloud déjà en place dans le groupe.
+
+### Scénario C — Produit SaaS d'une jeune startup européenne
+
+* **Contexte** : la startup lance un nouveau service en ligne et ignore quel trafic elle aura les premiers mois (quelques requêtes par jour au démarrage, avec de possibles pics soudains lors de campagnes de communication). Le budget initial est très serré : elle veut payer au plus près de sa consommation réelle et livrer très vite.
+
+* **Équipe** : trois développeurs polyvalents à l'aise avec Docker et GitHub Actions, sans personne dédiée à l'administration système.
+
+* **Contrainte** : données hébergées dans l'Union européenne (conformité RGPD), sans exigence SecNumCloud.
+
+## Atelier 3 : Auditer un projet face au *vendor lock-in* et à la souveraineté
+
+### Mise en situation
+
+Un prestataire vous soumet la proposition technique suivante sur **AWS** pour industrialiser votre application :
+
+* Réécriture complète de l'API Python sous forme de fonctions propriétaires **AWS Lambda** déclenchées par **AWS API Gateway**.
+
+* Remplacement de la base de données PostgreSQL par **AWS DynamoDB** (base de données NoSQL propriétaire à AWS).
+
+* Stockage des documents et pièces jointes des utilisateurs sur **AWS S3**.
+
+* Déploiement de l'infrastructure écrit uniquement avec **AWS CloudFormation**.
+
+* Hébergement configuré dans la région **Paris (eu-west-3)**, accompagné de la mention : *« L'hébergement physique à Paris garantit que vos données échappent totalement aux lois extraterritoriales américaines »*.
+
+### Questions d'audit
+
+1. **Évaluer le verrouillage fournisseur (*vendor lock-in*) :** classez chacune des quatre briques techniques proposées (Lambda/API Gateway, DynamoDB, S3, CloudFormation) selon son niveau de verrouillage (**Faible**, **Moyen** ou **Fort**) et expliquez pourquoi en une phrase par brique.
+
+2. **Vérifier l'affirmation sur la souveraineté :** l'argument du prestataire selon lequel le choix d'un datacenter à Paris protège automatiquement les données contre les lois américaines est-il exact ? Appuyez-vous sur les notions de **RGPD**, **Cloud Act** et **SecNumCloud** pour rédiger votre réponse.
+
+3. **Anticiper les coûts cachés d'une migration :** si la direction décide deux ans plus tard de rapatrier l'application vers un acteur européen (**OVHCloud** ou **Scaleway**), quels sont les deux principaux obstacles techniques ou coûts financiers (notamment liés aux données et au réseau) auxquels le projet sera confronté ?
+
+4. **Proposer un compromis réaliste :** en vous appuyant sur l'arbitrage recommandé dans le cours (ni verrouillage total, ni « 0 % lock-in » coûteux à maintenir), quelle architecture alternative proposez-vous pour conserver le confort des services managés tout en garantissant la réversibilité ?
+
+## Atelier 4 : Piloter la résilience géographique et le budget Cloud
+
+### Mise en situation
+
+Lors d'un comité de pilotage, deux questions sont soulevées par la direction financière et la direction des opérations avant de basculer vos environnements dans le Cloud :
+
+* **Question opérationnelle :** *« Si le datacenter qui héberge notre application subit une panne électrique majeure en région parisienne, comment s'assurer que le service continue de tourner sans interruption ? »*
+
+* **Question financière :** *« Nous avons peur que la facture Cloud dérape à cause de nos environnements de développement et de recette, alors qu'ils ne servent jamais la nuit ni le week-end. »*
+
+### Questions d'analyse
+
+1. **Région vs Zone de disponibilité (AZ) :** expliquez simplement la différence entre une **Région** et une **Zone de disponibilité (AZ)**, puis indiquez quelle organisation physique vous demandez à l'équipe technique pour résister à la panne d'un datacenter tout en conservant les données en France.
+
+2. **Modèle financier (CAPEX vs OPEX) et *pay-as-you-go* :** expliquez la différence financière entre l'achat de serveurs internes (**CAPEX**) et la location dans le Cloud (**OPEX**), puis indiquez quelle règle simple permise par le modèle *pay-as-you-go* permet de réduire fortement le coût des environnements de test et de recette.
+
+3. **Réversibilité d'une base de données managée :** un responsable d'application craint qu'utiliser une base **PostgreSQL managée** dans le Cloud (AWS RDS, Google Cloud SQL, Scaleway Managed Databases) enferme le projet chez un seul fournisseur. Expliquez-lui pourquoi le choix du moteur open source PostgreSQL préserve la portabilité des données et du code.
+
+## Atelier 5 : Synthèse d'arbitrage pour la direction informatique
+
+Rédigez en **5 à 6 lignes** une note de recommandation claire à destination d'un directeur informatique qui hésite entre trois scénarios pour héberger la nouvelle application conteneurisée de l'entreprise :
+
+1. acheter un serveur physique pour l'installer dans les locaux de l'entreprise (*on-premise*) ;
+
+2. louer une machine virtuelle nue en **IaaS** et y gérer Docker soi-même ;
+
+3. utiliser un service **CaaS managé** associé à une base **PostgreSQL managée** chez un fournisseur Cloud européen.
+
+Votre synthèse doit comparer ces trois pistes en abordant explicitement :
+
+* le modèle financier (**CAPEX vs OPEX**) ;
+
+* la charge de maintenance technique pour l'équipe ;
+
+* la réversibilité et le délai de mise en service.
